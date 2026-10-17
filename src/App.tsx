@@ -161,7 +161,9 @@ function climateSuggestions(y:number, climate:Climate, elevationMeters=0):string
  const wet=['Temperate forest','Temperate rainforest','Wetland'];
  return rain<250?[...dry,...wet]:[...wet,...dry];
 }
-function isColdHighland(y:number, climate:Climate, elevation:number){
+
+function isColdHighland(y: number, _climate: Climate, elevation: number) {
+
  return 29-0.52*Math.abs(latitude(y))-0.0065*Math.max(-500,elevation)<=0;
 }
 function longitudeAt(x:number){return ((x/10+180)%360+360)%360-180;}
@@ -240,6 +242,7 @@ function biomeLabelVisible(b: Biome, all: Biome[], index: number): boolean {
     next.landId === b.landId && inPolygon({ x: b.x, y: b.y }, biomeOutline(next))
   );
 }
+void biomeLabelVisible;
 
 // Quadratic curve through the midpoint of each pair: closed paths without angular corners.
 function closedPath(points: P[]): string {
@@ -340,7 +343,7 @@ export default function App() {
   const [waterWidth, setWaterWidth] = useState(7);
   const [depthMeters,setDepthMeters]=useState(1200);
   const [depthRadius,setDepthRadius]=useState(48);
-  const [elevationDraft,setElevationDraft]=useState(200);
+  const [,setElevationDraft]=useState(200);
   const [editName,setEditName]=useState('');
   const [editDescription,setEditDescription]=useState('');
   const [editDistrictImage,setEditDistrictImage]=useState('');
@@ -629,6 +632,8 @@ export default function App() {
       return { zoom: z, x: v.x + fx * (W / v.zoom - W / z), y: v.y + fy * (H / v.zoom - H / z) };
     });
   }
+  void zoom;
+  
   // A non-passive wheel handler prevents the surrounding page from scrolling
   // while the pointer is over the interactive map. The book can still scroll.
   useEffect(() => {
