@@ -4,6 +4,7 @@ import App from './App';
 import { supabase } from './supabase';
 import './AuthGate.css';
 import LiveCommunity from './LiveCommunity';
+import FriendsPanel from './FriendsPanel';
 
 type Mode = 'signin' | 'signup';
 
@@ -19,6 +20,8 @@ export default function AuthGate() {
   const [profileName, setProfileName] = useState('Explorer');
   const [cursorColor, setCursorColor] = useState('#678c70');
   const [editingProfile, setEditingProfile] = useState(false);
+  const [username,setUsername] = useState<string|null>(null);
+  const [usernameDraft,setUsernameDraft] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -38,16 +41,18 @@ export default function AuthGate() {
     let active = true;
     if (!session?.user.id) {
       setEditingProfile(false);
+      setUsername(null);
       return () => { active = false; };
     }
-    supabase.from('profiles').select('display_name,cursor_color').eq('id', session.user.id).maybeSingle()
+    supabase.from('profiles').select('display_name,cursor_color,username').eq('id', session.user.id).maybeSingle()
       .then(({ data, error: profileError }) => {
         if (!active) return;
         if (profileError) { setError(profileError.message); return; }
         if (data) {
           setProfileName(data.display_name || 'Explorer');
           setCursorColor(data.cursor_color || '#678c70');
-        }
+          setUsername(data.username || '');
+        } else setUsername('');
       });
     return () => { active = false; };
   }, [session?.user.id]);
@@ -87,6 +92,25 @@ export default function AuthGate() {
     setBusy(false);
   }
 
+  async function claimUsername(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) return;
+    const chosen=usernameDraft.trim();
+    if(!/^[A-Za-z][A-Za-z0-9_]{2,23}$/.test(chosen)){
+      setError('Username must be 3–24 characters, start with a letter, and contain only letters, numbers or underscores.');return;
+    }
+    setBusy(true);setError('');
+    const {error:failure}=await supabase.from('profiles').update({username:chosen}).eq('id',session.user.id).is('username',null);
+    if(failure){
+      setError(failure.code==='23505'?'That username is already taken. Choose another.':failure.message);
+    }else{
+      const {data}=await supabase.from('profiles').select('username').eq('id',session.user.id).single();
+      if(data?.username)setUsername(data.username);
+      else setError('Unable to claim username. Please try again.');
+    }
+    setBusy(false);
+  }
+
   async function signOut() {
     setBusy(true); setError('');
     const { error: signOutError } = await supabase.auth.signOut();
@@ -120,14 +144,27 @@ export default function AuthGate() {
     );
   }
 
+  if(username===null)return <div className="atlas-auth-screen"><p>Loading your explorer profile…</p></div>;
+  if(!username)return <main className="atlas-auth-screen"><section className="atlas-auth-card">
+    <div className="atlas-auth-topline">THE BOTANY SOCIETY · EXPLORER IDENTITY</div>
+    <h1>Choose your username</h1>
+    <p>Your unique @username lets other explorers find and add you. It cannot be changed after claiming it. Your display name can still change.</p>
+    <form onSubmit={claimUsername} className="atlas-auth-form">
+      <label>Unique username<input required minLength={3} maxLength={24} autoComplete="off" placeholder="ForestExplorer" value={usernameDraft} onChange={e=>setUsernameDraft(e.target.value)}/></label>
+      <button type="submit" disabled={busy}>{busy?'Checking…':'Claim username & enter atlas'}</button>
+    </form>
+    {error&&<p role="alert" className="atlas-auth-error">{error}</p>}
+    <button type="button" disabled={busy} onClick={signOut}>Sign out</button>
+  </section></main>;
   return (
     <>
       <header className="atlas-member-bar">
-        <span className="atlas-member-identity"><span className="atlas-member-dot" style={{ background: cursorColor }} /> {profileName} <span className="atlas-member-caption">· Signed in</span></span>
-        <span className="atlas-member-actions">
+        <span className="atlas-member-identity"><span className="atlas-member-dot" style={{ background: cursorColor }} /> {profileName} <span className="atlas-member-caption">· @{username}</span></span>
+        <div className="atlas-member-actions" data-friends-header="true">
+          <FriendsPanel userId={session.user.id} />
           <button type="button" onClick={() => {setEditingProfile(v => !v); setMessage('');}}>My Profile</button>
           <button type="button" disabled={busy} onClick={signOut}>Sign Out</button>
-        </span>
+        </div>
       </header>
       {editingProfile && (
         <section className="atlas-profile-editor">

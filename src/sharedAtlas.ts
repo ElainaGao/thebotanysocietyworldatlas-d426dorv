@@ -71,6 +71,8 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
   const base=useRef(new Map<string,Row>());
   const dataRef=useRef(data); dataRef.current=data;
   const userRef=useRef('');
+  const grantsRef=useRef(new Map<string,{can_edit:boolean;can_delete:boolean}>());
+  const canAccess=(owner:string,permission:'can_edit'|'can_delete')=>owner===userRef.current||!!grantsRef.current.get(owner)?.[permission];
   const flushing=useRef(false);
   const queuedRemote=useRef(false);
   const syncReady=useRef(false);
@@ -87,8 +89,9 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       const old=flatten(previous), next=flatten(proposed);
       for(const [key,record] of old){
         const owner=base.current.get(key)?.creator_id;
-        if(owner && owner!==userRef.current && !same(record.payload,next.get(key)?.payload)){
-          setError('This object belongs to another member. Only its creator may change or remove it.');
+        const permission=next.has(key)?'can_edit':'can_delete';
+        if(owner && !canAccess(owner,permission) && !same(record.payload,next.get(key)?.payload)){
+          setError('You need permission from the creator to edit or delete this record.');
           return previous;
         }
       }
@@ -96,6 +99,13 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
     });
   },[]);
 
+  const refreshGrants=useCallback(async()=>{
+    if(!userRef.current)return;
+    const {data,error:failure}=await supabase.from('atlas_friend_grants')
+      .select('owner_id,friend_id,can_edit,can_delete').eq('friend_id',userRef.current);
+    if(failure){setError('Could not check friend permissions: '+failure.message);return;}
+    grantsRef.current=new Map((data||[]).map(g=>[g.owner_id,{can_edit:g.can_edit,can_delete:g.can_delete}]));
+  },[]);
   const refresh=useCallback(async()=>{
     if(flushing.current){queuedRemote.current=true;return;}
     // Do not discard pending local changes during reconnection.
@@ -127,7 +137,7 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       if(disposed)return;
       if(failure||!user){setError('Sign in to access the shared atlas.');return;}
       userRef.current=user.id;
-      void refresh();
+      void refreshGrants().then(()=>refresh());
     });
     const channel=supabase.channel('atlas-live-records')
       .on('postgres_changes',{event:'*',schema:'public',table:'atlas_records'},payload=>{
@@ -147,10 +157,14 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
         }else void refresh();
       })
       .subscribe(status=>{if(!disposed){setConnected(status==='SUBSCRIBED');if(status==='SUBSCRIBED'&&syncReady.current)void refresh();}});
-    const onOnline=()=>{void refresh();};
+    const friendChannel=supabase.channel(`atlas-permission-changes-${crypto.randomUUID()}`)
+      .on('postgres_changes',{event:'*',schema:'public',table:'atlas_friend_grants'},()=>{void refreshGrants();})
+      .on('postgres_changes',{event:'*',schema:'public',table:'atlas_friendships'},()=>{void refreshGrants();})
+      .subscribe();
+    const onOnline=()=>{void refreshGrants().then(()=>refresh());};
     window.addEventListener('online',onOnline);
-    return ()=>{disposed=true;window.removeEventListener('online',onOnline);void supabase.removeChannel(channel);};
-  },[refresh]);
+    return ()=>{disposed=true;window.removeEventListener('online',onOnline);void supabase.removeChannel(channel);void supabase.removeChannel(friendChannel);};
+  },[refresh,refreshGrants]);
 
   useEffect(()=>{if(ready)setChangeToken(n=>n+1);},[data,ready]);
   useEffect(()=>{
@@ -176,8 +190,9 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
     for(const [key,verb,item] of operations){
       if(!item)continue;
       const previous=base.current.get(key);
-      if(previous && previous.creator_id!==userRef.current){
-        setError('Cannot modify another member’s record. The shared atlas will be refreshed.');failed=true;break;
+      const permission=verb==='delete'?'can_delete':'can_edit';
+      if(previous && !canAccess(previous.creator_id,permission)){
+        setError('Permission denied for this object. Refresh the atlas after requesting access.');failed=true;break;
       }
       let failure;
       if(verb==='delete'){
@@ -189,10 +204,10 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       }
       if(failure){setError(`Save failed for ${item.kind}: ${failure.message}. Please retry.`);failed=true;break;}
       if(verb==='delete')base.current.delete(key);
-      else base.current.set(key,{...item,creator_id:userRef.current});
+      else base.current.set(key,{...item,creator_id:previous?.creator_id||userRef.current});
     }
     flushing.current=false;setSaving(false);
-    if(failed){return;}
+    if(failed){void refreshGrants();return;}
     // If the member continued editing during the previous save, flush those
     // latest changes before applying deferred incoming server events.
     const latest=flatten(dataRef.current);
