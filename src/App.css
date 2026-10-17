@@ -197,3 +197,29 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .atlas-sync-banner{padding:10px 20px;background:#eee3c8;border-bottom:1px solid #a18d68;color:#493c2c;font-family:Georgia,serif;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
 .atlas-sync-banner button{border:1px solid #806e4e;background:#faf4e5;color:#493c2c;padding:5px 10px;cursor:pointer}
 .atlas-sync-banner [role=alert]{color:#922e2a}
+
+
+/* Ornamental compass: pinned to the map, not to the scrolling document. */
+.map-surface { position: relative; }
+.atlas-compass {
+  position: absolute; bottom: 12px; left: 3px;
+  width: 76px; height: 76px; z-index: 8;
+  pointer-events: none; opacity: .94;
+  filter: drop-shadow(0 2px 3px rgba(50,38,27,.27));
+}
+.atlas-compass svg { display: block; width: 100%; height: 100%; }
+@media (max-width: 740px) {
+  .atlas-compass { width: 58px; height: 58px; bottom: 9px; left: 2px; }
+}
+
+/* Freehand coastline drawing: browser gestures must not steal pen/touch strokes. */
+.atlas-map.atlas-map-drawing { touch-action:none; cursor:crosshair; }
+.coast-brush-tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:10px 0; }
+.coast-brush-tools button { padding:7px 13px; }
+.coast-brush-tools small { color:#695a40; }
+
+/* v16 visible release indicator for checking that StackBlitz loaded the replacement */
+.atlas-release-marker { display:inline-block; margin:7px 0; padding:4px 9px; background:#ede0bf; border:1px solid #907c5f; color:#57452f; border-radius:5px; font-family:Georgia,serif; font-size:11px; letter-spacing:.06em; }
+
+/* Visible feature verification for version 17 */
+.atlas-release-marker { display:block !important; text-align:center; font-weight:700; padding:7px 12px; width:max-content; max-width:calc(100% - 24px); margin:8px auto; }

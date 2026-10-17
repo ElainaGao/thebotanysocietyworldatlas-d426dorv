@@ -4,11 +4,12 @@ import './App.css';
 import { useSharedAtlas } from './sharedAtlas';
 import { useSharedJournal } from './sharedJournal';
 
+
 type P = { x: number; y: number };
 type View = P & { zoom: number };
 type Size = 'Island' | 'Small' | 'Medium' | 'Large';
-type Tool = 'explore' | 'land' | 'drawland' | 'district' | 'biome' | 'feature' | 'river' | 'pond' | 'label' | 'depth';
-type Land = { id: string; name: string; x: number; y: number; size?: Size; latitude: number; biome: string; biomeBase?: string; magical: boolean; description: string; outline?: P[]; elevation?: number };
+type Tool = 'explore' | 'land' | 'drawland' | 'drawocean' | 'district' | 'biome' | 'feature' | 'river' | 'pond' | 'label' | 'depth';
+type Land = { id: string; name: string; x: number; y: number; size?: Size; latitude: number; biome: string; biomeBase?: string; magical: boolean; description: string; outline?: P[]; cutouts?: P[][]; elevation?: number };
 type District = { id: string; landId: string; name: string; x: number; y: number; radius?: number; biomeId?:string; description?:string; image?:string };
 type Plant = { id: string; landId: string; name: string; habitat: string; description: string; termId?: string; image?: string; biomeId?:string };
 type Biome = { id: string; landId: string; x: number; y: number; radius: number; kind: string; name: string; magical: boolean; realm?: 'terrestrial' | 'aquatic'; districtId?: string; salinity?: string; depth?: string; depthMeters?:number; landKind?:string; aquaticKind?:string; waterId?:string };
@@ -275,7 +276,101 @@ function inPolygon(p:P, polygon:P[]):boolean {
   }
   return inside;
 }
-function insideLand(p: P, land: Land) { return inPolygon(p,outline(land)); }
+function segmentsCross(a:P,b:P,c:P,d:P){
+ const cross=(u:P,v:P,w:P)=>(v.x-u.x)*(w.y-u.y)-(v.y-u.y)*(w.x-u.x);
+ const x=cross(a,b,c),y=cross(a,b,d),z=cross(c,d,a),w=cross(c,d,b);
+ return x*y<=0 && z*w<=0;
+}
+// Construct the actual shoreline (land minus ocean strokes), instead of putting
+// un-clipped "hole" paths into an even-odd SVG fill. A hole extending offshore
+// would otherwise invert the outside sea and produce phantom new land.
+const coastlineCache = new WeakMap<Land, P[][]>();
+function coastlineRings(land: Land): P[][] {
+  const cached = coastlineCache.get(land);
+  if (cached) return cached;
+  const base = outline(land);
+  const cuts = (land.cutouts || []).filter(poly => poly.length >= 3);
+  if (!cuts.length) { const result = [base]; coastlineCache.set(land, result); return result; }
+
+  const polygons = [base, ...cuts];
+  type Edge = { a: P; b: P; stops: number[] };
+  const edges: Edge[] = polygons.flatMap(poly => poly.map((a, i) =>
+    ({ a, b: poly[(i + 1) % poly.length], stops: [0, 1] })));
+  const cross = (a: P, b: P) => a.x * b.y - a.y * b.x;
+  const minus = (a: P, b: P): P => ({ x: a.x - b.x, y: a.y - b.y });
+  const lerp = (a: P, b: P, t: number): P => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const EPS = 1e-8;
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const e = edges[i], f = edges[j];
+      const r = minus(e.b, e.a), s = minus(f.b, f.a);
+      const denom = cross(r, s);
+      if (Math.abs(denom) < EPS) continue;
+      const q = minus(f.a, e.a);
+      const t = cross(q, s) / denom, u = cross(q, r) / denom;
+      if (t > EPS && t < 1 - EPS && u >= -EPS && u <= 1 + EPS) e.stops.push(t);
+      if (u > EPS && u < 1 - EPS && t >= -EPS && t <= 1 + EPS) f.stops.push(u);
+    }
+  }
+  const isLand = (p: P) => inPolygon(p, base) && !cuts.some(c => inPolygon(p, c));
+  const segments: { a: P; b: P }[] = [];
+  const seen = new Set<string>();
+  const key = (p: P) => `${Math.round(p.x * 1e5)},${Math.round(p.y * 1e5)}`;
+  for (const edge of edges) {
+    const stops = [...new Set(edge.stops)].sort((a, b) => a - b);
+    for (let i = 1; i < stops.length; i++) {
+      if (stops[i] - stops[i - 1] < EPS) continue;
+      const a = lerp(edge.a, edge.b, stops[i - 1]);
+      const b = lerp(edge.a, edge.b, stops[i]);
+      const midpoint = lerp(a, b, .5);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < EPS) continue;
+      const n = Math.min(.04, len * .1);
+      const left = { x: midpoint.x - dy * n / len, y: midpoint.y + dx * n / len };
+      const right = { x: midpoint.x + dy * n / len, y: midpoint.y - dx * n / len };
+      const insideLeft = isLand(left), insideRight = isLand(right);
+      if (insideLeft === insideRight) continue;
+      // Orient every coastline section with land consistently on its left.
+      const s = insideLeft ? { a, b } : { a: b, b: a };
+      const id = `${key(s.a)}>${key(s.b)}`;
+      if (!seen.has(id)) { seen.add(id); segments.push(s); }
+    }
+  }
+  const next = new Map<string, number[]>();
+  segments.forEach((s, i) => {
+    const k = key(s.a);
+    next.set(k, [...(next.get(k) || []), i]);
+  });
+  const used = new Set<number>();
+  const rings: P[][] = [];
+  for (let i = 0; i < segments.length; i++) {
+    if (used.has(i)) continue;
+    const ring: P[] = [];
+    let current = i;
+    const begin = key(segments[i].a);
+    for (let count = 0; count <= segments.length; count++) {
+      if (used.has(current)) break;
+      used.add(current);
+      const segment = segments[current];
+      ring.push(segment.a);
+      const endpoint = key(segment.b);
+      if (endpoint === begin) break;
+      const candidate = (next.get(endpoint) || []).find(idx => !used.has(idx));
+      if (candidate === undefined) { ring.length = 0; break; }
+      current = candidate;
+    }
+    if (ring.length >= 3) rings.push(ring);
+  }
+  coastlineCache.set(land, rings);
+  return rings;
+}
+function insideLand(p: P, land: Land) {
+  return coastlineRings(land).reduce((inside, ring) => inside !== inPolygon(p, ring), false);
+}
+function landShape(land: Land) {
+  return coastlineRings(land).map(closedPath).join(' ');
+}
 function nearSegment(p:P,a:P,b:P,r:number){const dx=b.x-a.x,dy=b.y-a.y;const t=clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/(dx*dx+dy*dy||1),0,1);return Math.hypot(p.x-a.x-t*dx,p.y-a.y-t*dy)<=r;}
 function insideWater(p:P,w:Water){return w.kind==='pond' ? inPolygon(p,w.points) : w.points.some((q,i)=>i>0&&nearSegment(p,w.points[i-1],q,(w.width||7)/2+3));}
 const LAND_ICON_PATHS:Record<string,string>={
@@ -283,23 +378,39 @@ const LAND_ICON_PATHS:Record<string,string>={
 };
 
 // Only the portions of former coastlines covered by another land become pale seam lines.
+// A shared boundary belongs to exactly one member of each overlapping pair.
+// Selection is pseudo-random but stable: it depends only on their permanent IDs.
+// Draw the selected coastline only when it lies INSIDE the other continent.
+function seamWinner(first:string,second:string):string {
+  const ids=[first,second].sort();
+  let hash=2166136261;
+  for(const ch of `${ids[0]}:${ids[1]}`){hash=Math.imul(hash ^ ch.charCodeAt(0),16777619);}
+  return (hash>>>0)%2===0?ids[0]:ids[1];
+}
 function seams(land:Land, others:Land[]):string[] {
   const pts=outline(land);
   const result:string[]=[];
-  const slices=8;
-  for(let i=0;i<pts.length;i++) {
-    const a=pts[i],b=pts[(i+1)%pts.length];
-    for(let k=0;k<slices;k++) {
-      const t=(k+.5)/slices;
-      const m={x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};
-      if(others.some(o=>o.id!==land.id && insideLand(m,o))) {
-        const q=k/slices,r=(k+1)/slices;
-        result.push(`M ${a.x+(b.x-a.x)*q} ${a.y+(b.y-a.y)*q} L ${a.x+(b.x-a.x)*r} ${a.y+(b.y-a.y)*r}`);
+  for(const other of others){
+    if(other.id===land.id || seamWinner(land.id,other.id)!==land.id)continue;
+    for(let i=0;i<pts.length;i++){
+      const a=pts[i],b=pts[(i+1)%pts.length];
+      const steps=Math.max(8,Math.min(48,Math.ceil(Math.hypot(b.x-a.x,b.y-a.y)/3)));
+      let runStart=-1;
+      const pointAt=(t:number):P=>({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t});
+      for(let k=0;k<=steps;k++){
+        const actuallyCovered=k<steps && insideLand(pointAt((k+.5)/steps),other);
+        if(actuallyCovered && runStart<0)runStart=k;
+        if((!actuallyCovered||k===steps) && runStart>=0){
+          const p1=pointAt(runStart/steps),p2=pointAt(k/steps);
+          result.push(`M${p1.x} ${p1.y}L${p2.x} ${p2.y}`);
+          runStart=-1;
+        }
       }
     }
   }
   return result;
 }
+
 type AtlasName = {key:string;name:string;x:number;y:number;priority:number;size:number};
 // Screen-aware collision detection. Keeps labels legible at all zoom levels.
 function arrangeNames(names:AtlasName[],view:View,canvasWidth:number,canvasHeight:number){
@@ -340,8 +451,11 @@ export default function App() {
   const [selectedDistrictId, setSelectedDistrictId] = useState<string | null>(null);
   const [selectedOceanBiomeId, setSelectedOceanBiomeId] = useState<string | null>(null);
   const [selectedWaterId, setSelectedWaterId] = useState<string | null>(null);
+  const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [point, setPoint] = useState<P | null>(null);
   const [drawing, setDrawing] = useState<P[]>([]);
+  const [coastEraser, setCoastEraser] = useState(false);
+  const coastStroke = useRef<{pointerId:number; erasing:boolean; last:P}|null>(null);
   const [waterWidth, setWaterWidth] = useState(7);
   const [depthMeters,setDepthMeters]=useState(1200);
   const [depthRadius,setDepthRadius]=useState(48);
@@ -672,12 +786,44 @@ export default function App() {
     element.addEventListener('wheel', handleMapWheel, { passive: false });
     return () => element.removeEventListener('wheel', handleMapWheel);
   }, []);
+  // Capture pointer events for continuous strokes from mice, tablets and touchscreens.
+  function paintCoast(e:PointerEvent<SVGSVGElement>,start:boolean){
+    const p=screenPoint(e.clientX,e.clientY);
+    if(Math.abs(p.y)>900)return;
+    const erasing=coastStroke.current?.erasing??coastEraser;
+    const previous=coastStroke.current?.last;
+    if(!start && previous && Math.hypot(previous.x-p.x,previous.y-p.y)<1.5)return;
+    if(erasing){
+      const radius=18 / Math.max(.5,view.zoom);
+      setDrawing(points=>points.filter(q=>Math.hypot(q.x-p.x,q.y-p.y)>radius));
+    } else {
+      setDrawing(points=>{
+        const last=points[points.length-1];
+        if(last&&Math.hypot(last.x-p.x,last.y-p.y)<1.5)return points;
+        // Interpolate along fast moves, so pen/touch paths do not have gaps.
+        const distance=last?Math.hypot(p.x-last.x,p.y-last.y):0;
+        const count=last?Math.min(24,Math.floor(distance/4)):0;
+        const added=last?Array.from({length:count},(_,i)=>({x:last.x+(p.x-last.x)*(i+1)/(count+1),y:last.y+(p.y-last.y)*(i+1)/(count+1)})):[];
+        return [...points,...added,p].slice(-1600);
+      });
+    }
+    if(coastStroke.current)coastStroke.current.last=p;
+  }
   function down(e: PointerEvent<SVGSVGElement>) {
+    if (tool==='drawland'||tool==='drawocean'||tool==='pond'){
+      if(e.button!==0 && !(e.pointerType==='pen' && e.button===5))return;
+      e.preventDefault();
+      coastStroke.current={pointerId:e.pointerId,erasing:coastEraser||(e.pointerType==='pen'&&e.button===5),last:screenPoint(e.clientX,e.clientY)};
+      e.currentTarget.setPointerCapture(e.pointerId);
+      paintCoast(e,true);
+      return;
+    }
     if (e.button !== 0) return;
     drag.current = { x: e.clientX, y: e.clientY, view: { ...view }, moved: false };
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function move(e: PointerEvent<SVGSVGElement>) {
+    if((tool==='drawland'||tool==='drawocean'||tool==='pond')&&coastStroke.current?.pointerId===e.pointerId){paintCoast(e,false);return;}
     if (!drag.current || !svg.current) return;
     const d = drag.current, dx = e.clientX - d.x, dy = e.clientY - d.y;
     if (Math.hypot(dx, dy) > 5) d.moved = true;
@@ -686,6 +832,11 @@ export default function App() {
     setView({ ...d.view, x: d.view.x - dx / r.width * (W / d.view.zoom), y: d.view.y - dy / r.height * (H / d.view.zoom) });
   }
   function up(e: PointerEvent<SVGSVGElement>) {
+    if(coastStroke.current?.pointerId===e.pointerId){
+      coastStroke.current=null;
+      if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);
+      return;
+    }
     const wasDrag = drag.current?.moved;
     drag.current = null;
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
@@ -693,6 +844,19 @@ export default function App() {
     const p = screenPoint(e.clientX, e.clientY);
     const hit = [...data.lands].reverse().find(l => insideLand(p, l));
     if (tool === 'explore') {
+      // Landscapes can exist in open ocean, where there is no land panel.
+      // Hit-test their map coordinates directly in Explore mode.
+      const featureHit = [...data.features].reverse().find(f =>
+        Math.hypot(p.x - f.x, p.y - f.y) <= 20
+      );
+      setSelectedFeatureId(featureHit?.id ?? null);
+      if (featureHit) {
+        setSelectedLandId(featureHit.landId || hit?.id || null);
+        setSelectedDistrictId(null);
+        setSelectedWaterId(null);
+        setSelectedOceanBiomeId(null);
+        return;
+      }
       // Select the water itself first, even when it lies on top of land.
       // The land remains selected so the other land controls still work.
       const waterHit = [...data.waters].reverse().find(w => insideWater(p, w));
@@ -718,9 +882,9 @@ export default function App() {
       }
       return;
     }
-    if (tool === 'drawland') { if (Math.abs(p.y)>900) return alert('Place coastlines between 90°N and 90°S.'); setDrawing(v=>[...v,p]); return; }
+    if (tool === 'drawland' || tool === 'drawocean' || tool === 'pond') return;
     if (tool === 'land') { if (Math.abs(p.y) > 900) return alert('Choose a location between 90°N and 90°S.'); setPoint(p); return; }
-    if (tool === 'river' || tool === 'pond') { if (!land) return alert('Select a land first.'); setDrawing(v => [...v, p]); return; }
+    if (tool === 'river') { if (!land) return alert('Select a land first.'); setDrawing(v => [...v, p]); return; }
     if (tool === 'depth') {
       if (!hit) return alert('Terrain elevation and depressions can only be placed on land. Click inside a land boundary.');
       setPoint(p); setSelectedLandId(hit.id); return;
@@ -731,7 +895,7 @@ export default function App() {
     if (!land) return alert('Select a land for this feature.');
     setPoint(p);
   }
-  function changeTool(next: Tool) { setSelectedWaterId(null); setTool(next); setPoint(null); setDrawing([]); setName(''); setDescription(''); }
+  function changeTool(next: Tool) { setSelectedFeatureId(null); setSelectedWaterId(null); setTool(next); setPoint(null); setDrawing([]); setCoastEraser(false); coastStroke.current=null; setName(''); setDescription(''); }
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!name.trim() && tool !== 'biome' && tool !== 'depth') return;
@@ -772,14 +936,64 @@ export default function App() {
     setSelectedLandId(newLand.id);setSelectedDistrictId(null);
     changeTool('explore');setMagical(false);setBiomeName('');
   }
+  function finishOcean() {
+    if(drawing.length<3)return;
+    const polygon=drawing.map(p=>({...p}));
+    const touches=(l:Land)=>{
+      const border=outline(l);
+      return polygon.some(p=>insideLand(p,l)) || border.some(p=>inPolygon(p,polygon)) ||
+        border.some((p,i)=>polygon.some((q,j)=>segmentsCross(p,border[(i+1)%border.length],q,polygon[(j+1)%polygon.length])));
+    };
+    const touched=data.lands.filter(touches);
+    if(!touched.length){alert('Your ocean outline does not overlap any land.');return;}
+    if(!window.confirm(`Cut ocean into ${touched.length} land record(s)? Only land you own or have Edit access to can be changed.`))return;
+    const touchedIds = new Set(touched.map(l => l.id));
+    setData(d => {
+      const removedIds = new Set<string>();
+      const nextLands = d.lands.flatMap(l => {
+        if (!touchedIds.has(l.id)) return [l];
+        const updated: Land = {...l, cutouts: [...(l.cutouts || []), polygon]};
+        // Recalculate the *actual* land-minus-ocean geometry. A completely
+        // flooded land has no shoreline rings, so remove its record instead
+        // of retaining an invisible, unselectable island in the database.
+        if (coastlineRings(updated).length === 0) {
+          removedIds.add(l.id);
+          return [];
+        }
+        return [updated];
+      });
+      if (!removedIds.size) return {...d, lands: nextLands};
+      // Apply the same dependent-record cleanup as Delete Land. This also
+      // prevents stranded districts/organisms if the sea swallows the island.
+      const removedDistrictIds = new Set(d.districts.filter(x => removedIds.has(x.landId)).map(x => x.id));
+      const removedPlantIds = new Set(d.plants.filter(x => removedIds.has(x.landId)).map(x => x.id));
+      return {
+        ...d,
+        lands: nextLands,
+        districts: d.districts.filter(x => !removedIds.has(x.landId)),
+        plants: d.plants.filter(x => !removedIds.has(x.landId)),
+        biomes: d.biomes.filter(x => !removedIds.has(x.landId)),
+        features: d.features.filter(x => !removedIds.has(x.landId)),
+        waters: d.waters.filter(x => !removedIds.has(x.landId)),
+        labels: d.labels.filter(x => !removedIds.has(x.landId)),
+        occurrences: d.occurrences.filter(x => !removedDistrictIds.has(x.districtId) && !removedPlantIds.has(x.plantId)),
+        creatures: d.creatures.filter(x => !removedIds.has(x.landId)),
+        relations: d.relations.filter(x => !removedIds.has(x.landId)),
+        climates: Object.fromEntries(Object.entries(d.climates).filter(([landId]) => !removedIds.has(landId)))
+      };
+    });
+    setSelectedLandId(null);
+    setSelectedDistrictId(null);
+    changeTool('explore');
+  }
   function placeFeature() {
     if (!point) return;
     setData(d => ({ ...d, features: [...d.features, { id: id(), landId: data.lands.find(l=>insideLand(point,l))?.id||land?.id||'', x: point.x, y: point.y, kind: chosenFeature, depthMeters:featureIsAquatic?depthMeters:undefined }] }));
     setPoint(null);
   }
   function finishWater() {
-    if (!land || drawing.length < (tool === 'pond' ? 3 : 2)) return;
-    setData(d => ({ ...d, waters: [...d.waters, { id: id(), landId: land.id, kind: tool as 'river' | 'pond', name: name.trim() || (tool === 'river' ? 'Unnamed river' : 'Unnamed lake'), points: drawing, width: waterWidth, depthMeters }] }));
+    if ((tool === 'river' && !land) || drawing.length < (tool === 'pond' ? 3 : 2)) return;
+    setData(d => ({ ...d, waters: [...d.waters, { id: id(), landId: land?.id || '', kind: tool as 'river' | 'pond', name: name.trim() || (tool === 'river' ? 'Unnamed river' : 'Unnamed lake'), points: drawing, width: waterWidth, depthMeters }] }));
     setDrawing([]); setName(''); changeTool('explore');
   }
   function addPlant(e: FormEvent<HTMLFormElement>) {
@@ -863,6 +1077,7 @@ export default function App() {
     });
     if (kind === 'district' && selectedDistrictId === itemId) setSelectedDistrictId(null);
     if (kind === 'water' && selectedWaterId === itemId) setSelectedWaterId(null);
+    if (kind === 'feature' && selectedFeatureId === itemId) setSelectedFeatureId(null);
     if (kind === 'plant' && existingPlant === itemId) setExistingPlant('');
   }
   function detachPlant(plantId: string) {
@@ -878,6 +1093,7 @@ export default function App() {
     return <button type="button" className="record-delete" onClick={() => removeItem(kind, itemId, itemName)}>Delete</button>;
   }
   const selectedWater = data.waters.find(w => w.id === selectedWaterId) || null;
+  const selectedFeature = data.features.find(f => f.id === selectedFeatureId) || null;
   const inCurrentScope = (r:{landId:string;biomeId?:string}) =>
     activeAquaticBiome ? r.biomeId===activeAquaticBiome.id : !!land && r.landId===land.id;
   const localCreatures=data.creatures.filter(c=>inCurrentScope(c) && (!district || c.districtId===district.id));
@@ -898,7 +1114,7 @@ export default function App() {
   ];
   // Expensive map geometry is recalculated only when the relevant records change,
   // NOT on every pan, zoom, field edit or journal interaction.
-  const landPaths = useMemo(() => new Map(data.lands.map(l => [l.id, closedPath(outline(l))])), [data.lands]);
+  const landPaths = useMemo(() => new Map(data.lands.map(l => [l.id, landShape(l)])), [data.lands]);
   const joinedSeams = useMemo(() => data.lands.flatMap(l => seams(l, data.lands)), [data.lands]);
   const biomePaths = useMemo(() => new Map(data.biomes.map(b => [b.id, closedPath(biomeOutline(b))])), [data.biomes]);
   const waterPaths = useMemo(() => new Map(data.waters.map(w => [w.id, w.kind === 'pond' ? closedPath(w.points) : openPath(w.points)])), [data.waters]);
@@ -918,15 +1134,16 @@ export default function App() {
       </section>
       <header className="hero"><p className="eyebrow">The Botany Society · Cartographic Archive</p><h1>World Atlas</h1><p className="subtitle">An illustrated record of imaginary lands and botanical life.</p></header>
       <nav className="controls">
-        {(['explore','land','drawland','district','biome','feature','river','pond','label','depth'] as Tool[]).map(t => <button className={tool === t ? 'tool-active' : ''} key={t} onClick={() => { if (t !== 'explore' && t !== 'land' && t !== 'drawland' && !['biome','district','feature','depth'].includes(t) && !land) return alert('Select an existing land first.'); changeTool(t); }}>{({ explore:'Explore', land:'Auto Land', drawland:'Draw Land', district:'District', biome:'Biome', feature:'Landscape', river:'Draw River', pond:'Draw Pond', label:'Place Label',depth:'Land Elevation / Depression' } as Record<Tool,string>)[t]}</button>)}
+        {(['explore','land','drawland','drawocean','district','biome','feature','river','pond','label','depth'] as Tool[]).map(t => <button className={tool === t ? 'tool-active' : ''} key={t} onClick={() => { if (t !== 'explore' && t !== 'land' && t !== 'drawland' && t !== 'drawocean' && t !== 'pond' && !['biome','district','feature','depth'].includes(t) && !land) return alert('Select an existing land first.'); changeTool(t); }}>{({ explore:'Explore', land:'Auto Land', drawland:'Draw Land', drawocean:'Draw Ocean', district:'District', biome:'Biome', feature:'Landscape', river:'Draw River', pond:'Draw Pond', label:'Place Label',depth:'Land Elevation / Depression' } as Record<Tool,string>)[t]}</button>)}
         <button onClick={() => setShowEquator(v => !v)}>{showEquator ? 'Hide Equator' : 'Show Equator'}</button>
         <button aria-pressed={showNames} onClick={() => setShowNames(v => !v)}>{showNames ? 'Hide Names' : 'Show Names'}</button>
         <button onClick={() => setView({ x: 0, y: 0, zoom: 1 })}>Reset View</button>
       </nav>
       <p className="atlas-shortcuts">Shortcuts: Ctrl+Z undo · Ctrl+Shift+Z redo · WASD pan when hovering the map · Delete selected map object (with confirmation)</p>
-      <p className="atlas-instruction">{tool === 'explore' ? 'Click a land or district to explore · Drag to pan · Scroll to zoom' : tool === 'land' ? 'Click to place an automatically generated land; overlapping lands connect.' : tool === 'drawland' ? 'Click around the coast to draw a custom land, then enter its name below.' : tool === 'river' || tool === 'pond' ? 'Click successive points, including through the ocean, then finish the smooth water drawing below.' : 'Click on the map to position this feature, including offshore regions.'}</p>
+      <div className="atlas-release-marker" aria-label="Atlas build version" data-atlas-version="17">ATLAS v17 · OCEAN CUTOUT · BRUSH POND · SINGLE COASTLINE</div>
+      <p className="atlas-instruction">{tool === 'explore' ? 'Click a land or district to explore · Drag to pan · Scroll to zoom' : tool === 'land' ? 'Click to place an automatically generated land; overlapping lands connect.' : tool === 'drawland' ? 'Hold and drag to draw the coastline with a mouse, finger, touchpad or pen. Switch to Eraser to remove draft strokes; finish below.' : tool === 'drawocean' ? 'Draw an enclosed area to cut sea or an inlet into lands you own or can edit. Only intersecting land is removed; a fully submerged land record is deleted.' : tool === 'pond' ? 'Same brush as Draw Land: hold and drag around the pond, then Finish Drawing. Switch to Eraser to correct your draft.' : tool === 'river' ? 'Click successive points to draw a river.' : 'Click on the map to position this feature, including offshore regions.'}</p>
       <section className="map-frame"><div className="atlas-map-shell"><div className="map-surface atlas-viewport">
-        <svg ref={svg} onMouseEnter={() => { mapHovered.current = true; }} onMouseLeave={() => { mapHovered.current = false; }} className="atlas-map" viewBox={`${left} ${top} ${width} ${height}`} preserveAspectRatio="none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; }}>
+        <svg ref={svg} onMouseEnter={() => { mapHovered.current = true; }} onMouseLeave={() => { mapHovered.current = false; }} className={`atlas-map${['drawland','drawocean','pond'].includes(tool)?' atlas-map-drawing':''}`} viewBox={`${left} ${top} ${width} ${height}`} preserveAspectRatio="none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; coastStroke.current=null; }}>
           <defs>
             <filter id="joined-coast" x="-15%" y="-15%" width="130%" height="130%" colorInterpolationFilters="sRGB">
               <feMorphology in="SourceAlpha" operator="dilate" radius="3" result="expanded"/>
@@ -934,17 +1151,28 @@ export default function App() {
               <feFlood floodColor="#665b3e" result="ink"/><feComposite in="ink" in2="rim" operator="in" result="outline"/>
               <feMerge><feMergeNode in="outline"/><feMergeNode in="SourceGraphic"/></feMerge>
             </filter>
-            {data.lands.map(l => <clipPath key={l.id} id={`clip-${l.id}`}><path d={landPaths.get(l.id) || ''}/></clipPath>)}
+            {data.lands.map(l => <clipPath key={l.id} id={`clip-${l.id}`}><path d={landPaths.get(l.id) || ''} clipRule="evenodd"/></clipPath>)}
+            {/* Hide coastline strokes where another continent already covers them.
+                The land fill is still drawn normally. Internal joined seams are
+                rendered separately, with one stable ID-based winner per pair. */}
+            {data.lands.map(l => <mask key={`coastmask-${l.id}`} id={`coastmask-${l.id}`} maskUnits="userSpaceOnUse" x={left} y={top} width={width} height={height}>
+              <rect x={left} y={top} width={width} height={height} fill="white" />
+              {data.lands.filter(other => other.id !== l.id).map(other =>
+                <path key={other.id} d={landPaths.get(other.id) || ''} fill="black" fillRule="evenodd" />)}
+            </mask>)}
             {/* A single clip path made from all coastlines; rivers are visible only over land. */}
             <clipPath id="river-land-clip" clipPathUnits="userSpaceOnUse">
-              {data.lands.map(l => <path key={l.id} d={landPaths.get(l.id) || ''}/>)}
+              {data.lands.map(l => <path key={l.id} d={landPaths.get(l.id) || ''} clipRule="evenodd"/>)}
             </clipPath>
-            <mask id="ocean-only" maskUnits="userSpaceOnUse" x={left} y={top} width={width} height={height}><rect x={left} y={top} width={width} height={height} fill="white"/>{data.lands.map(l=><path key={l.id} d={landPaths.get(l.id) || ''} fill="black"/>)}</mask>
+            <mask id="ocean-only" maskUnits="userSpaceOnUse" x={left} y={top} width={width} height={height}><rect x={left} y={top} width={width} height={height} fill="white"/>{data.lands.map(l=><path key={l.id} d={landPaths.get(l.id) || ''} fill="black" fillRule="evenodd"/>)}</mask>
             {data.waters.map(w=><clipPath key={`wclip-${w.id}`} id={`wclip-${w.id}`} clipPathUnits="userSpaceOnUse"><path d={waterPaths.get(w.id) || ''} stroke={w.kind==='river'?'black':'none'} strokeWidth={w.width||7}/></clipPath>)}
           </defs>
           <g className="coordinate-grid">{gridX.map(x => <line key={`x${x}`} x1={x} x2={x} y1={top} y2={top+height}/>)}{gridY.map(y => <line key={`y${y}`} x1={left} x2={left+width} y1={y} y2={y}/>)}</g>
           {showEquator && <line x1={left} y1={0} x2={left+width} y2={0} stroke="#6c4d36" strokeWidth={1.8/view.zoom} strokeDasharray={`${8/view.zoom} ${6/view.zoom}`}/>}
-          <g filter="url(#joined-coast)">{data.lands.map(l => <path key={l.id} d={landPaths.get(l.id) || ''} fill={l.magical ? '#b6af91' : '#a8b38d'}/>)}</g>
+          <g className="atlas-joined-land-fill">{data.lands.map(l => <path key={l.id} d={landPaths.get(l.id) || ''} fillRule="evenodd" fill={l.magical ? '#b6af91' : '#a8b38d'} stroke="none"/>)}</g>
+          <g className="atlas-visible-coastline" fill="none" stroke="#665b3e" strokeWidth={3.1 / Math.sqrt(view.zoom)} strokeLinecap="round" strokeLinejoin="round">
+            {data.lands.map(l => <path key={l.id} d={landPaths.get(l.id) || ''} mask={`url(#coastmask-${l.id})`} />)}
+          </g>
           <g className="merge-seams" fill="none" stroke="#eee3c5" strokeWidth={2.2 / Math.sqrt(view.zoom)} strokeLinecap="round" opacity="0.8">{joinedSeams.map((d,i)=><path key={i} d={d}/>) }</g>
           {/* Land elevation tint sits BELOW all biome paint.
               Therefore any existing or newly created biome remains visible. */}
@@ -973,10 +1201,10 @@ export default function App() {
           {data.biomes.map(b => data.waters.filter(w => w.points.some(p => Math.abs(p.x-b.x) < b.radius*2.3 + (w.width||7) && Math.abs(p.y-b.y) < b.radius*2.3 + (w.width||7)) || (w.kind==='pond' && inPolygon({x:b.x,y:b.y},w.points))).map(w=><g key={`${b.id}-${w.id}`} clipPath={`url(#wclip-${w.id})`}><path d={biomePaths.get(b.id) || ''} fill={biomeColor(b.magical?b.kind:(b.aquaticKind||b.kind))}/></g>))}
           {/* Terrain regions drawn beneath biome patches above. */}
           {data.districts.map(d => <g key={d.id}><circle cx={d.x} cy={d.y} r={d.radius || 24} fill={selectedDistrictId===d.id ? '#e8dab1' : '#d6ca9e'} fillOpacity="0.45" stroke="#766044" strokeDasharray="4 3" strokeWidth="1.5"/></g>)}
-          {data.features.map(f => <g key={f.id} transform={`translate(${f.x} ${f.y})`} className="feature-icon"><title>{f.kind}</title><path d={LAND_ICON_PATHS[f.kind]||'M-20 12L0-16L20 12Z'} fill="none" stroke="#493c2b" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/><circle cx="0" cy="0" r="1.3" fill="#493c2b"/></g>)}
+          {data.features.map(f => <g key={f.id} transform={`translate(${f.x} ${f.y})`} className="feature-icon"><title>{f.kind}</title><path d={LAND_ICON_PATHS[f.kind]||'M-20 12L0-16L20 12Z'} fill="none" stroke="#493c2b" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/><circle cx="0" cy="0" r="1.3" fill="#493c2b"/>{selectedFeatureId===f.id && <circle cx="0" cy="0" r="25" fill="none" stroke="#f5e1a2" strokeWidth="3" strokeDasharray="5 4" pointerEvents="none"/>}</g>)}
           {data.lands.map(l => <g key={l.id}>{selectedLandId===l.id && <circle cx={l.x} cy={l.y} r="5" fill="#62442e"/>}</g>)}
 
-          {drawing.length > 0 && <g clipPath={tool === 'river' ? 'url(#river-land-clip)' : undefined}><path d={tool === 'pond' || tool === 'drawland' ? (drawing.length>=3 ? closedPath(drawing):openPath(drawing)) : openPath(drawing)} fill={tool==='pond' ? '#8eaeaa88': tool==='drawland' ? '#a8b38d77':'none'} stroke="#385e6a" strokeWidth={tool==='river' ? waterWidth:2} strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5 4"/>{drawing.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r="4" fill="#385e6a"/>)}</g>}
+          {drawing.length > 0 && <g clipPath={tool === 'river' ? 'url(#river-land-clip)' : undefined}><path d={tool === 'pond' || tool === 'drawland' || tool === 'drawocean' ? (drawing.length>=3 ? closedPath(drawing):openPath(drawing)) : openPath(drawing)} fill={tool==='pond' ? '#8eaeaa88': tool==='drawland' ? '#a8b38d77':tool==='drawocean' ? '#8eaeaa88':'none'} stroke="#385e6a" strokeWidth={tool==='river' ? waterWidth:2} strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5 4"/>{tool==='river'&&drawing.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r="4" fill="#385e6a"/>)}</g>}
           {point && tool === 'biome' && <g pointerEvents="none">
             <path d={closedPath(biomeOutline({ id: 'biome-preview', landId: data.lands.find(l=>insideLand(point,l) || inPolygon(l.id?{x:point.x+biomeRadius*.7,y:point.y}:point,outline(l)) || inPolygon({x:point.x-biomeRadius*.7,y:point.y},outline(l)))?.id || '', x: point.x, y: point.y, radius: biomeRadius, kind: selectedBiome, name: biomeName || selectedBiome, magical }))} fill={biomeColor(selectedBiome)} fillOpacity="0.8" stroke="#62452d" strokeWidth="2" strokeDasharray="5 4"/>
           </g>}
@@ -990,6 +1218,19 @@ export default function App() {
             </text>)}
           </g>
         </svg>
+        <div className="atlas-compass" aria-label="Compass: north is up, east is right, south is down, west is left" role="img">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+            <circle cx="50" cy="50" r="46" fill="#efe0bd" fillOpacity=".91" stroke="#665038" strokeWidth="1.8"/>
+            <circle cx="50" cy="50" r="41" fill="none" stroke="#8f7756" strokeWidth=".8" strokeDasharray="1.5 3"/>
+            <path d="M50 20 L57 47 L80 50 L57 53 L50 80 L43 53 L20 50 L43 47Z" fill="#71563e" stroke="#4a392c" strokeWidth="1"/>
+            <path d="M50 20 L50 80 L43 53 L20 50 L43 47Z" fill="#c2ad80"/>
+            <path d="M50 22L55 47L50 50Z" fill="#455a4b"/>
+            <circle cx="50" cy="50" r="3" fill="#efe0bd" stroke="#594331" strokeWidth="1"/>
+            <g fill="#483829" fontFamily="Georgia, serif" fontWeight="bold" fontSize="9" textAnchor="middle">
+              <text x="50" y="14">N</text><text x="89" y="53">E</text><text x="50" y="94">S</text><text x="11" y="53">W</text>
+            </g>
+          </svg>
+        </div>
         <div className="map-corner-label">CARTOGRAPHIC SURVEY · VOL. V</div><div className="zoom-indicator">{Math.round(view.zoom*100)}%</div>
       </div>
         <div className="atlas-gadgets">
@@ -1112,11 +1353,19 @@ export default function App() {
             <button type="button" className="delete-land-button" onClick={deleteLand}>Delete This Land and Its Contents</button>
           </>}
         </>}
-        {tool === 'drawland' && <><h2>Draw Your Own Land</h2><p>{drawing.length} coastline points. Choose at least three; corners will be smoothed.</p><label>Land name<input value={name} onChange={e=>setName(e.target.value)} placeholder="New continent"/></label><label>Description<textarea value={description} onChange={e=>setDescription(e.target.value)}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical environment</label>{magical && <><label>Climate override<select value={ALL_BIOMES.includes(biomeType)?biomeType:ALL_BIOMES[0]} onChange={e=>setBiomeType(e.target.value)}>{ALL_BIOMES.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)}/></label></>}<button disabled={drawing.length<3||!name.trim()} onClick={finishCustomLand}>Finish Land</button><button onClick={()=>setDrawing(v=>v.slice(0,-1))} disabled={!drawing.length}>Undo Last Point</button><button onClick={()=>setDrawing([])}>Clear Coastline</button></>}
+        {tool === 'drawocean' && <><h2>Draw Ocean / Cut Coastline</h2><p>Trace a closed region. Where your region overlaps a land you own or are allowed to edit, the land becomes ocean. The rest of the land and its records remain intact.</p><div className="coast-brush-tools"><button className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button><small>{drawing.length} points</small></div><button type="button" disabled={drawing.length<3} onClick={finishOcean}>Apply Ocean Cutout</button><button onClick={()=>setDrawing([])}>Clear Draft</button></>}
+        {tool === 'drawland' && <><h2>Draw Your Own Land</h2><p>Hold and drag to trace a coastline. Release to finish a stroke; it closes automatically when you save. The eraser removes parts of the unsaved outline.</p><div className="coast-brush-tools"><button type="button" className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button type="button" className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button><small>{drawing.length} points · Pencil/tablet/mouse/touch</small></div><label>Land name<input value={name} onChange={e=>setName(e.target.value)} placeholder="New continent"/></label><label>Description<textarea value={description} onChange={e=>setDescription(e.target.value)}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical environment</label>{magical && <><label>Climate override<select value={ALL_BIOMES.includes(biomeType)?biomeType:ALL_BIOMES[0]} onChange={e=>setBiomeType(e.target.value)}>{ALL_BIOMES.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)}/></label></>}<button disabled={drawing.length<3||!name.trim()} onClick={finishCustomLand}>Finish Land</button><button onClick={()=>setDrawing(v=>v.slice(0,-1))} disabled={!drawing.length}>Undo Last Point</button><button onClick={()=>setDrawing([])}>Clear Coastline</button></>}
         {tool === 'land' && <><h2>Found a New Land</h2><label>Land size<select value={size} onChange={e=>setSize(e.target.value as Size)}>{Object.keys(SIZES).map(s=><option key={s}>{s}</option>)}</select></label>{!point ? <p>Click on the map to position your land.</p> : <form onSubmit={submit}><p>Latitude: {latitudeLabel(point.y)}</p><label>Land name<input value={name} onChange={e=>setName(e.target.value)} required/></label><label>Description<textarea value={description} onChange={e=>setDescription(e.target.value)}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical environment</label>{magical && <><label>Environment<select value={selectedBiome} onChange={e=>setBiomeType(e.target.value)}>{ALL_BIOMES.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom environment name (optional)<input value={biomeName} onChange={e=>setBiomeName(e.target.value)} placeholder="e.g. The Eternal Bloom"/></label></>}<p>Natural suggestion: {naturalBiomes(point.y)[0]}</p><button type="submit">Establish Land</button></form>}</>}
         {['district','biome','label','depth'].includes(tool) && <><h2>{tool === 'district' ? 'Create a District' : tool === 'biome' ? 'Paint a Biome Region' : tool==='depth'?'Raise / Lower Land':'Place a Map Label'}</h2><p>Region: {tool === 'depth' ? (land?.name || 'Select a land') : (land?.name||'Open ocean / independent habitat')}</p>{tool === 'depth' && <><label>Land height change (meters; positive raises, negative creates a depression)<input type="number" min="-11000" max="8800" step="100" value={depthMeters} onChange={e=>setDepthMeters(clamp(Number(e.target.value),-11000,8800))}/></label><label>Terrain region radius<input type="range" min="10" max="160" value={depthRadius} onChange={e=>setDepthRadius(Number(e.target.value))}/></label><p>Organic terrain patches can be placed only on land. Overlapping patches raise or lower land cumulatively, capped at −11,000 m and +8,800 m. Cold conditions produce pale highland terrain, while authored biome patches remain visible on top. Natural biome choices account for the total local elevation. The coastline remains unchanged.</p></>}{tool === 'district' && <><label>District radius<input type="range" min="10" max="70" value={districtRadius} onChange={e=>setDistrictRadius(Number(e.target.value))}/></label><label>District description<textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder="Describe this district's landscape, culture or habitats..."/></label><label>District illustration (optional)<input type="file" accept="image/*" onChange={e=>void pickImage(e,setDistrictImage)}/></label>{districtImage&&<div className="book-upload-preview"><img src={districtImage} alt="District illustration preview"/><button type="button" onClick={()=>setDistrictImage('')}>Remove image</button></div>}</>}{tool === 'biome' && <>{(realm==='aquatic'||siteAquatic)&&<label>Water depth (meters, aquatic habitat)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>}<label>Biome patch size<input type="range" min="10" max="110" value={biomeRadius} onChange={e=>setBiomeRadius(Number(e.target.value))}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical climate override</label><label>Ecological realm<select value={realm} onChange={e=>{setRealm(e.target.value as 'terrestrial'|'aquatic');setBiomeType('');}}><option value="terrestrial">Terrestrial / land</option><option value="aquatic">Aquatic / marine / freshwater</option></select></label><p>Natural choices account for latitude, rainfall and combined terrain elevation on land, or salinity/depth in water. Longitude: {point?longitudeAt(point.x).toFixed(1):land?longitudeAt(land.x).toFixed(1):'0'}°. Longitude locates a region but does not determine climate by itself.</p><p><strong>Placement:</strong> {point?biomeScope:'Click anywhere on land, a lake/river, or the ocean.'} · Natural land: {naturalLandHere} · Natural water: {naturalWaterHere}. Crossing a shoreline automatically uses the appropriate natural biome on each side. Magical patches keep their chosen identity throughout.</p><label>Biome type<select value={selectedBiome} onChange={e=>setBiomeType(e.target.value)}>{biomesToChoose.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom biome name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)} placeholder="Optional local name"/></label></>}{!point ? <p>Click the map to position this region. Elevation patches must be placed on land; biomes may cross into water.</p> : <form onSubmit={submit}>{tool !== 'biome' && tool!=='depth' && <label>Name<input value={name} onChange={e=>setName(e.target.value)} required/></label>}<button type="submit">{tool === 'district' ? 'Create District' : tool === 'biome' ? 'Add Biome' : tool==='depth'?'Apply Terrain Change':'Place Label'}</button></form>}</>}
+        {tool === 'explore' && selectedFeature && <section className="selected-landscape-record" aria-label="Selected landscape">
+          <h2>Selected Landscape · {selectedFeature.kind}</h2>
+          <p>{selectedFeature.landId ? `Land: ${data.lands.find(l=>l.id===selectedFeature.landId)?.name || 'Open ocean'}` : 'Open ocean'} · {selectedFeature.depthMeters != null ? `Depth: ${selectedFeature.depthMeters} m` : 'Surface landscape'}</p>
+          <button type="button" onClick={()=>startEdit('feature',selectedFeature.id,selectedFeature.kind)}>Edit Landscape</button>
+          {deleteRow('feature',selectedFeature.id,selectedFeature.kind+' landscape')}
+          <button type="button" onClick={()=>setSelectedFeatureId(null)}>Deselect</button>
+        </section>}
         {tool === 'feature' && <><h2>Landscape Illustration</h2><p>{point?featureIsAquatic?'Aquatic environment':'Terrestrial environment':'Choose a position to see compatible landscapes.'}</p><label>Feature<select value={chosenFeature} onChange={e=>setFeatureKind(e.target.value)}>{featureChoices.map(x=><option key={x}>{x}</option>)}</select></label>{featureIsAquatic&&<label>Water depth (meters)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>}<p>{point ? 'Location chosen.' : 'Click on land or in water.'}</p><button disabled={!point} onClick={placeFeature}>Place Feature</button></>}
-        {(tool === 'river' || tool === 'pond') && <><h2>{tool === 'river' ? 'Draw a River' : 'Draw a Pond or Lake'}</h2><p>{drawing.length} points chosen. {tool==='pond' ? 'Choose at least three points for an enclosed shape.' : 'Choose at least two points for a river.'}</p><label>Water depth (meters)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>{tool === 'river' && <label>River width<input type="range" min="3" max="28" value={waterWidth} onChange={e=>setWaterWidth(Number(e.target.value))}/></label>}<label>Water body name<input value={name} onChange={e=>setName(e.target.value)}/></label><button disabled={drawing.length < (tool==='pond'?3:2)} onClick={finishWater}>Finish Drawing</button><button onClick={()=>setDrawing(v=>v.slice(0,-1))} disabled={!drawing.length}>Undo Last Point</button><button onClick={()=>setDrawing([])}>Clear Points</button></>}
+        {(tool === 'river' || tool === 'pond') && <><h2>{tool === 'river' ? 'Draw a River' : 'Draw a Pond or Lake'}</h2><p>{drawing.length} points. {tool==='pond' ? 'Draw your pond with a brush, and release the pointer to finish the outline.' : 'Click at least two points for a river.'}</p><label>Water depth (meters)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>{tool === 'pond' && <div className="coast-brush-tools"><button className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button></div>}{tool === 'river' && <label>River width<input type="range" min="3" max="28" value={waterWidth} onChange={e=>setWaterWidth(Number(e.target.value))}/></label>}<label>Water body name<input value={name} onChange={e=>setName(e.target.value)}/></label><button disabled={drawing.length < (tool==='pond'?3:2)} onClick={finishWater}>Finish Drawing</button><button onClick={()=>setDrawing(v=>v.slice(0,-1))} disabled={!drawing.length}>Undo Last Point</button><button onClick={()=>setDrawing([])}>Clear Points</button></>}
       </div>
       <div className="atlas-panel"><p className="panel-kicker">THE BOTANICAL REGISTER</p><h2>{district ? `Ecology of ${district.name}` : activeAquaticBiome ? `Ecology of ${activeAquaticBiome.name}` : 'Organism Register'}</h2>{organismScope && <nav className="organism-tabs"><button className={organismTab==='plants'?'selected':''} onClick={()=>setOrganismTab('plants')} type="button">Plants, Fungi & Algae</button><button className={organismTab==='wildlife'?'selected':''} onClick={()=>setOrganismTab('wildlife')} type="button">Animals & Aquatic Life</button><button className={organismTab==='relationships'?'selected':''} onClick={()=>setOrganismTab('relationships')} type="button">Ecological Relationships</button></nav>}{!organismScope ? <p>Select a land or an aquatic biome to register organisms. Terrestrial biomes outside lands do not have an independent register.</p> : <>{organismTab==='plants' && <><form onSubmit={addPlant}><p>{district ? `New species in ${district.name}` : `New species in ${activeAquaticBiome?.name || land?.name}`}</p><label>Species name<input value={plantName} onChange={e=>setPlantName(e.target.value)} required placeholder="Silvervein Yarrow"/></label><label>Habitat<input value={habitat} onChange={e=>setHabitat(e.target.value)}/></label><label>Classification (optional)<select value={plantTermId} onChange={e=>setPlantTermId(e.target.value)}><option value="">Not classified</option>{terms.map(t=><option key={t.id} value={t.id}>{t.name}{t.builtin?' · reference':t.kind==='real'?' · real (submitted)':' · magical'}</option>)}</select></label><label>Biome / habitat patch (optional)<select value={plantBiome} onChange={e=>setPlantBiome(e.target.value)}><option value="">General land record</option>{localBiomeOptions.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><button type="button" onClick={()=>showBook('dictionary')}>Browse / Create Dictionary Terms</button><label>Observations<textarea value={plantNotes} onChange={e=>setPlantNotes(e.target.value)} rows={3}/></label><label>Botanical illustration (optional)<input type="file" accept="image/*" onChange={e=>void pickImage(e,setPlantImage)}/></label>{plantImage&&<div className="book-upload-preview"><img src={plantImage} alt="Plant illustration ready to save"/><button type="button" onClick={()=>setPlantImage('')}>Remove image</button></div>}<button type="submit">Create Plant Record</button></form>{district && <><h3>Add an Existing Species</h3><p>Select an existing species without duplicating its encyclopedia record.</p><select value={existingPlant} onChange={e=>setExistingPlant(e.target.value)}><option value="">Choose a plant</option>{data.plants.filter(p=>inCurrentScope(p) && !data.occurrences.some(o=>o.districtId===district.id && o.plantId===p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><button disabled={!existingPlant} onClick={attachPlant}>Add to This District</button></>}</> }</>}
         {organismScope && <>

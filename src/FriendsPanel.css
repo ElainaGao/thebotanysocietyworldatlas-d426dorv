@@ -6,3 +6,24 @@ header.atlas-member-bar [data-friends-header="true"] { display: flex !important;
 header.atlas-member-bar [data-friends-header="true"] > .atlas-friends { position: relative !important; inset: auto !important; top: auto !important; right: auto !important; bottom: auto !important; left: auto !important; display: inline-flex !important; align-items: center !important; z-index: auto !important; margin: 0 !important; padding: 0 !important; width: auto !important; height: auto !important; isolation: auto !important; transform: none !important; }
 header.atlas-member-bar [data-friends-header="true"] > .atlas-friends > .atlas-friends-open { position: static !important; inset: auto !important; margin: 0 !important; padding: 7px 12px !important; font: 13px Georgia, serif !important; border: 1px solid #cbb58b !important; background: #eee0c4 !important; color: #473322 !important; border-radius: 0 !important; box-shadow: none !important; transform: none !important; }
 header.atlas-member-bar [data-friends-header="true"] > .atlas-friends > .atlas-friends-panel { position: absolute !important; top: calc(100% + 10px) !important; right: 0 !important; bottom: auto !important; left: auto !important; z-index: 3100 !important; width: min(430px, calc(100vw - 24px)) !important; }
+
+/* Online / offline marker, independent of the user's chosen cursor color. */
+.atlas-presence-line { display:flex !important; align-items:center; gap:6px; margin-top:3px; }
+.atlas-presence-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex:none; }
+.atlas-presence-dot.is-online { background:#388b4a; box-shadow:0 0 0 2px #388b4a22; }
+.atlas-presence-dot.is-offline { background:#8e9290; }
+
+/* No presence dots: inline text directly after the username. */
+.atlas-presence-text { display:inline !important; margin-left:6px; font-size:12px; font-style:normal; }
+.atlas-presence-text.is-online { color:#397a44 !important; }
+.atlas-presence-text.is-offline { color:#888c89 !important; }
+
+/* Text-only presence: no colored friend markers. */
+.atlas-friend-dot, .atlas-presence-dot {display:none !important;}
+.atlas-friend-person > span {flex:1;}
+.atlas-friend-person .atlas-presence-text {display:inline !important;}
+
+/* Version 17: no presence dot; status text immediately follows username. */
+.atlas-friend-entry .atlas-friend-person > span { display:inline-flex !important; flex:1; align-items:baseline; flex-wrap:wrap; gap:4px; }
+.atlas-friend-entry .atlas-presence-text {display:inline !important; margin:0 !important; font-size:12px; font-weight:normal; }
+.atlas-friend-entry .atlas-friend-dot, .atlas-friend-entry .atlas-presence-dot {display:none !important;}

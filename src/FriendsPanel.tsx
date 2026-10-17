@@ -14,6 +14,7 @@ export default function FriendsPanel({userId}:{userId:string}){
  const [error,setError]=useState('');
  const [message,setMessage]=useState('');
  const [busy,setBusy]=useState(false);
+ const [onlineIds,setOnlineIds]=useState<Set<string>>(()=>new Set());
  const reload=useCallback(async()=>{
   const [people, permissions]=await Promise.all([
     supabase.rpc('list_atlas_connections'),
@@ -44,6 +45,19 @@ export default function FriendsPanel({userId}:{userId:string}){
   const current=grants.find(g=>g.owner_id===userId&&g.friend_id===c.other_id);
   void act(()=>supabase.from('atlas_friend_grants').upsert({owner_id:userId,friend_id:c.other_id,can_edit:field==='can_edit'?enabled:current?.can_edit||false,can_delete:field==='can_delete'?enabled:current?.can_delete||false},{onConflict:'owner_id,friend_id'}),enabled?'Permission granted.':'Permission revoked.');
  }
+ // Ephemeral Supabase Presence: green while connected, gray otherwise.
+ useEffect(()=>{
+  const channel=supabase.channel('atlas-explorers-presence-v1',{config:{presence:{key:userId}}});
+  const refresh=()=>{
+   const members=channel.presenceState();
+   setOnlineIds(new Set(Object.keys(members).filter(id=>members[id]?.length>0)));
+  };
+  channel.on('presence',{event:'sync'},refresh)
+   .on('presence',{event:'join'},refresh)
+   .on('presence',{event:'leave'},refresh)
+   .subscribe(async status=>{if(status==='SUBSCRIBED')await channel.track({online_at:new Date().toISOString()});});
+  return ()=>{void channel.untrack();void supabase.removeChannel(channel);};
+ },[userId]);
  const friends=connections.filter(c=>c.status==='accepted');
  const incoming=connections.filter(c=>c.status==='pending'&&c.recipient_id===userId);
  const outgoing=connections.filter(c=>c.status==='pending'&&c.requester_id===userId);
@@ -53,12 +67,12 @@ export default function FriendsPanel({userId}:{userId:string}){
   {open&&<section className="atlas-friends-panel" aria-label="Friends and permissions">
    <header><strong>Explorers' Circle</strong><button type="button" onClick={()=>setOpen(false)}>✕</button></header>
    <form onSubmit={search} className="atlas-friend-search"><label>Find a member by username</label><div><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Username" maxLength={24}/><button type="submit">Search</button></div></form>
-   {results.length>0&&<div className="atlas-friend-section"><h4>Search results</h4>{results.map(p=><div key={p.id} className="atlas-friend-person"><span className="atlas-friend-dot" style={{background:p.cursor_color}}/> <span><b>@{p.username}</b><small>{p.display_name}</small></span><button disabled={busy||existing.has(p.id)} onClick={()=>send(p.id)}>{existing.has(p.id)?'Connected / pending':'Add friend'}</button></div>)}</div>}
+   {results.length>0&&<div className="atlas-friend-section"><h4>Search results</h4>{results.map(p=><div key={p.id} className="atlas-friend-person"><span><b>@{p.username}</b><small>{p.display_name}</small></span><button disabled={busy||existing.has(p.id)} onClick={()=>send(p.id)}>{existing.has(p.id)?'Connected / pending':'Add friend'}</button></div>)}</div>}
    {incoming.length>0&&<div className="atlas-friend-section"><h4>Requests awaiting you</h4>{incoming.map(c=><div key={c.other_id} className="atlas-friend-person"><b>@{c.username}</b><button disabled={busy} onClick={()=>accept(c)}>Accept</button><button disabled={busy} onClick={()=>unfriend(c)}>Decline</button></div>)}</div>}
    {outgoing.length>0&&<div className="atlas-friend-section"><h4>Requests sent</h4>{outgoing.map(c=><div key={c.other_id} className="atlas-friend-person"><span>@{c.username} · Pending</span><button disabled={busy} onClick={()=>unfriend(c)}>Cancel</button></div>)}</div>}
    <div className="atlas-friend-section"><h4>Friends ({friends.length})</h4>{friends.length===0&&<p>No friends yet. Search by username to invite someone.</p>}
     {friends.map(c=>{const out=grants.find(g=>g.owner_id===userId&&g.friend_id===c.other_id);const inbound=grants.find(g=>g.owner_id===c.other_id&&g.friend_id===userId);
-     return <div key={c.other_id} className="atlas-friend-entry"><div className="atlas-friend-person"><span className="atlas-friend-dot" style={{background:c.cursor_color}}/><span><b>@{c.username}</b><small>{c.display_name}</small></span><button disabled={busy} onClick={()=>unfriend(c)}>Unfriend</button></div>
+     return <div key={c.other_id} className="atlas-friend-entry"><div className="atlas-friend-person"><span><b>@{c.username}</b> <span className={`atlas-presence-text ${onlineIds.has(c.other_id)?'is-online':'is-offline'}`}>({onlineIds.has(c.other_id)?'Online':'Offline'})</span></span><button disabled={busy} onClick={()=>unfriend(c)}>Unfriend</button></div>
       <div className="atlas-friend-checks"><p>Allow this friend to change <b>my creations</b>:</p><label><input type="checkbox" checked={out?.can_edit||false} disabled={busy} onChange={e=>toggle(c,'can_edit',e.target.checked)}/> Edit</label><label><input type="checkbox" checked={out?.can_delete||false} disabled={busy} onChange={e=>toggle(c,'can_delete',e.target.checked)}/> Delete</label><small>Their permission for you: {inbound?.can_edit?'Edit ✓':'Edit ✗'} · {inbound?.can_delete?'Delete ✓':'Delete ✗'}</small></div>
      </div>;})}
    </div>
