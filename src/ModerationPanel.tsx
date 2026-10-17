@@ -58,7 +58,20 @@ export default function ModerationPanel({ userId }: { userId: string }) {
     const channel=supabase.channel(`moderators-panel-${userId}`)
       .on('postgres_changes',{event:'*',schema:'public',table:'atlas_moderators'},()=>{void refresh();})
       .subscribe();
-    return ()=>{void supabase.removeChannel(channel);};
+    // Re-check after a role is revoked, including when Realtime is unavailable.
+    const onFocus = () => { void refresh(); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') void refresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh();
+    }, 30000);
+    return () => {
+      void supabase.removeChannel(channel);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(timer);
+    };
   },[refresh,userId]);
 
   async function toggle(){
@@ -84,21 +97,10 @@ export default function ModerationPanel({ userId }: { userId: string }) {
     else setFound([]);
     await refresh();setBusy(false);
   }
-  // Keep a visible diagnostic instead of silently hiding the panel.
-  // This grants NO moderation privileges to a non-moderator.
-  if (ready && isModerator === false) return (
-    <div className="atlas-mod-root">
-      <button type="button" className="atlas-mod-trigger" onClick={() => { void refresh(); }}>
-        Moderation · Check account
-      </button>
-      <span className="atlas-mod-error" role="status">
-        This signed-in account has no moderator role. Check that you signed in
-        with the same account that owns the founder username, then select Check account.
-      </span>
-    </div>
-  );
-  // For a real moderator, failures stay visible instead of hiding the UI.
-  if(!ready || !me) return <div className="atlas-mod-root">
+  // Ordinary members have no moderation controls or diagnostic badges.
+  if (ready && isModerator === false) return null;
+  // Only display a verification problem for an account whose role could not be checked.
+  if (!ready || !me) return <div className="atlas-mod-root">
     <button type="button" className="atlas-mod-trigger" onClick={()=>{void refresh();}}>
       {error ? 'Moderation · Retry' : 'Moderation · Loading…'}
     </button>
