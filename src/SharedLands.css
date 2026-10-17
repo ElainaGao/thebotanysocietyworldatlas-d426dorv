@@ -1,0 +1,16 @@
+.shared-lands{margin:20px auto;max-width:1060px;padding:22px;border:2px double #8a6a4d;background:#ecddbd;color:#493827;box-shadow:0 5px 24px #48342126;font-family:Georgia,serif}
+.shared-lands-heading{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+.shared-lands h2{font-family:'IM Fell English',Georgia,serif;font-size:2rem;font-weight:normal;margin:4px 0}
+.shared-lands p{margin:7px 0;line-height:1.4}
+.shared-lands-kicker{font-size:.72rem;letter-spacing:.15em}
+.shared-lands button{border:1px solid #826747;background:#f6ead0;color:#473627;padding:9px 14px;cursor:pointer;font:inherit}
+.shared-lands button:disabled{opacity:.5;cursor:not-allowed}
+.shared-lands-content{border-top:1px solid #ad9773;margin-top:15px;padding-top:17px}
+.shared-land-form{display:grid;gap:12px;margin:12px 0 20px}
+.shared-land-form label{display:grid;gap:5px;font-size:.94rem}
+.shared-land-form input,.shared-land-form textarea{background:#fff6e3;border:1px solid #a58b69;padding:10px;font:inherit;color:#493827;max-width:100%}
+.shared-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.shared-land-list{display:grid;gap:9px}
+.shared-land-entry{background:#f8eccf;padding:13px;border:1px solid #b29b74;display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap}
+.shared-land-entry strong{font-size:1.18rem}.shared-land-entry small{color:#79614a}
+.shared-error{color:#992d20;font-weight:bold}.shared-status{font-size:.9rem;color:#53714c}.shared-caution{font-size:.82rem;color:#76644e}
