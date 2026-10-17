@@ -72,7 +72,8 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
   const dataRef=useRef(data); dataRef.current=data;
   const userRef=useRef('');
   const grantsRef=useRef(new Map<string,{can_edit:boolean;can_delete:boolean}>());
-  const canAccess=(owner:string,permission:'can_edit'|'can_delete')=>owner===userRef.current||!!grantsRef.current.get(owner)?.[permission];
+  const canAccess=(owner:string,permission:'can_edit'|'can_delete')=>moderatorRef.current||owner===userRef.current||!!grantsRef.current.get(owner)?.[permission];
+  const moderatorRef=useRef(false);
   const flushing=useRef(false);
   const queuedRemote=useRef(false);
   const syncReady=useRef(false);
@@ -106,6 +107,11 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
     if(failure){setError('Could not check friend permissions: '+failure.message);return;}
     grantsRef.current=new Map((data||[]).map(g=>[g.owner_id,{can_edit:g.can_edit,can_delete:g.can_delete}]));
   },[]);
+  const refreshModerator=useCallback(async()=>{
+    if(!userRef.current)return;
+    const {data,error:failure}=await supabase.from('atlas_moderators').select('enabled').eq('user_id',userRef.current).maybeSingle();
+    if(!failure) moderatorRef.current=!!data?.enabled;
+  },[]);
   const refresh=useCallback(async()=>{
     if(flushing.current){queuedRemote.current=true;return;}
     // Do not discard pending local changes during reconnection.
@@ -137,7 +143,7 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       if(disposed)return;
       if(failure||!user){setError('Sign in to access the shared atlas.');return;}
       userRef.current=user.id;
-      void refreshGrants().then(()=>refresh());
+      void Promise.all([refreshGrants(),refreshModerator()]).then(()=>refresh());
     });
     const channel=supabase.channel('atlas-live-records')
       .on('postgres_changes',{event:'*',schema:'public',table:'atlas_records'},payload=>{
@@ -161,10 +167,15 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       .on('postgres_changes',{event:'*',schema:'public',table:'atlas_friend_grants'},()=>{void refreshGrants();})
       .on('postgres_changes',{event:'*',schema:'public',table:'atlas_friendships'},()=>{void refreshGrants();})
       .subscribe();
-    const onOnline=()=>{void refreshGrants().then(()=>refresh());};
+    const modChannel=supabase.channel(`atlas-moderation-sync-${crypto.randomUUID()}`)
+      .on('postgres_changes',{event:'*',schema:'public',table:'atlas_moderators'},()=>{void refreshModerator();})
+      .subscribe();
+    const onOnline=()=>{void Promise.all([refreshGrants(),refreshModerator()]).then(()=>refresh());};
+    const onFocus=()=>{void refreshModerator();};
+    window.addEventListener('focus',onFocus);
     window.addEventListener('online',onOnline);
-    return ()=>{disposed=true;window.removeEventListener('online',onOnline);void supabase.removeChannel(channel);void supabase.removeChannel(friendChannel);};
-  },[refresh,refreshGrants]);
+    return ()=>{disposed=true;window.removeEventListener('online',onOnline);window.removeEventListener('focus',onFocus);void supabase.removeChannel(modChannel);void supabase.removeChannel(channel);void supabase.removeChannel(friendChannel);};
+  },[refresh,refreshGrants,refreshModerator]);
 
   useEffect(()=>{if(ready)setChangeToken(n=>n+1);},[data,ready]);
   useEffect(()=>{
