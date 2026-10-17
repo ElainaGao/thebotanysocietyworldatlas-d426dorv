@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, PointerEvent } from 'react';
 import './App.css';
+import { useSharedAtlas } from './sharedAtlas';
+import { useSharedJournal } from './sharedJournal';
 
 type P = { x: number; y: number };
 type View = P & { zoom: number };
@@ -329,7 +331,7 @@ function arrangeNames(names:AtlasName[],view:View,canvasWidth:number,canvasHeigh
   return output;
 }
 export default function App() {
-  const [data, setData] = useState<Atlas>(load);
+  const [data, setData, atlasSync] = useSharedAtlas<Atlas>(empty, load);
   const [view, setView] = useState<View>({ x: 0, y: 0, zoom: 1 });
   const [tool, setTool] = useState<Tool>('explore');
   const [showEquator, setShowEquator] = useState(true);
@@ -383,7 +385,7 @@ export default function App() {
   const [organismTab,setOrganismTab]=useState<'plants'|'wildlife'|'relationships'>('plants');
   const [bookOpen,setBookOpen]=useState(false);
   const [bookPage,setBookPage]=useState<BookPage>('dictionary');
-  const [book,setBook]=useState(readBook);
+  const [book,setBook,bookSync]=useSharedJournal(readBook);
   const [termName,setTermName]=useState('');
   const [termDescription,setTermDescription]=useState('');
   const [termKind,setTermKind]=useState<'real'|'magical'>('magical');
@@ -404,6 +406,7 @@ export default function App() {
     past: [], present: { atlas: data, journal: book }, future: [],
   });
   const restoringHistory = useRef(false);
+  const remoteHistoryRevision = useRef(`${atlasSync.remoteRevision}:${bookSync.remoteRevision}`);
   const mapHovered = useRef(false);
   const selectedForKeys = useRef({
     waterId: selectedWaterId, districtId: selectedDistrictId,
@@ -415,6 +418,15 @@ export default function App() {
   };
   useEffect(() => {
     const state = history.current;
+    const revision = `${atlasSync.remoteRevision}:${bookSync.remoteRevision}`;
+    // Incoming multiplayer events aren't local actions and must not be undone
+    // by Ctrl+Z (especially if another member owns those records).
+    if (remoteHistoryRevision.current !== revision || !atlasSync.ready || !bookSync.ready) {
+      remoteHistoryRevision.current = revision;
+      state.past=[]; state.future=[]; state.present={atlas:data,journal:book};
+      restoringHistory.current = false;
+      return;
+    }
     if (restoringHistory.current) {
       restoringHistory.current = false;
       state.present = { atlas: data, journal: book };
@@ -426,7 +438,7 @@ export default function App() {
     if (state.past.length > 30) state.past.shift();
     state.present = { atlas: data, journal: book };
     state.future = [];
-  }, [data, book]);
+  }, [data, book, atlasSync.remoteRevision, bookSync.remoteRevision, atlasSync.ready, bookSync.ready]);
 
   function undoChange() {
     const h = history.current;
@@ -548,8 +560,10 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => { try { localStorage.setItem('botany-world-atlas-v2', JSON.stringify(data));setStorageWarning(''); } catch { setStorageWarning('Atlas storage is full. New changes may not survive refresh.'); } }, [data]);
-  useEffect(() => { try {localStorage.setItem(BOOK_KEY,JSON.stringify(book));setStorageWarning('');}catch{setStorageWarning('Book storage is full. Try fewer or smaller images.');}},[book]);
+  // The old offline save stays untouched, available for a deliberate import.
+  useEffect(() => { if (!atlasSync.ready) return; try { localStorage.setItem('botany-world-atlas-online-cache-v1',JSON.stringify(data)); } catch { /* cache is optional */ } }, [data, atlasSync.ready]);
+  // Keep a separate local cache, not the original legacy archive.
+  useEffect(() => {if(!bookSync.ready)return;try{localStorage.setItem('botany-world-atlas-book-online-cache-v1',JSON.stringify(book));}catch{setStorageWarning('Journal cache is full.');}},[book,bookSync.ready]);
   const terms=[...STANDARD_TERMS,...book.terms];
   async function pickImage(event:React.ChangeEvent<HTMLInputElement>, apply:(value:string)=>void){
     const file=event.target.files?.[0]; if(!file) return;
@@ -893,6 +907,15 @@ export default function App() {
 
   return (
     <main className="page">
+      <section className="atlas-sync-banner" aria-live="polite">
+        <strong>Shared Planet · {atlasSync.ready ? (atlasSync.saving ? 'Saving…' : atlasSync.connected ? 'Live' : 'Reconnecting…') : 'Loading…'}</strong>
+        {atlasSync.error && <span role="alert">{atlasSync.error} <button type="button" onClick={atlasSync.refresh}>Retry</button></span>}
+        {bookSync.error && <span role="alert">{bookSync.error}</span>}
+        {atlasSync.legacyCount > 0 && <span>Local atlas backup: {atlasSync.legacyCount} records. <button type="button" onClick={atlasSync.importLegacy} disabled={!atlasSync.ready || atlasSync.saving}>Import previous map</button></span>}
+        <label className="atlas-import-label">Import an atlas JSON backup <input type="file" accept="application/json,.json" disabled={!atlasSync.ready || atlasSync.saving} onChange={async e=>{const file=e.target.files?.[0];if(file)await atlasSync.importFile(file);e.target.value='';}}/></label>
+        {bookSync.legacyCount > 0 && <span><button type="button" onClick={bookSync.importLegacy} disabled={!bookSync.ready}>Import previous journal</button></span>}
+        <label className="atlas-import-label">Import journal JSON <input type="file" accept="application/json,.json" disabled={!bookSync.ready} onChange={async e=>{const f=e.target.files?.[0];if(f)await bookSync.importFile(f);e.target.value='';}}/></label>
+      </section>
       <header className="hero"><p className="eyebrow">The Botany Society · Cartographic Archive</p><h1>World Atlas</h1><p className="subtitle">An illustrated record of imaginary lands and botanical life.</p></header>
       <nav className="controls">
         {(['explore','land','drawland','district','biome','feature','river','pond','label','depth'] as Tool[]).map(t => <button className={tool === t ? 'tool-active' : ''} key={t} onClick={() => { if (t !== 'explore' && t !== 'land' && t !== 'drawland' && !['biome','district','feature','depth'].includes(t) && !land) return alert('Select an existing land first.'); changeTool(t); }}>{({ explore:'Explore', land:'Auto Land', drawland:'Draw Land', district:'District', biome:'Biome', feature:'Landscape', river:'Draw River', pond:'Draw Pond', label:'Place Label',depth:'Land Elevation / Depression' } as Record<Tool,string>)[t]}</button>)}
@@ -1133,7 +1156,7 @@ export default function App() {
           )}
         </>}
       </div></section>
-      <section className="notes">{storageWarning&&<p role="alert">{storageWarning}</p>}<p>{data.lands.length} lands · {data.districts.length} districts · {data.plants.length} plant species</p><p>Prototype records are saved only in this browser.</p></section>
+      <section className="notes">{storageWarning&&<p role="alert">{storageWarning}</p>}<p>{data.lands.length} lands · {data.districts.length} districts · {data.plants.length} plant species</p><p>Atlas content synchronizes through Supabase. Journal notes are private to your account.</p></section>
     </main>
   );
 }

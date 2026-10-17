@@ -192,3 +192,8 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 /* Atlas v9.5 — always-on-top and zoom-aware cartographic lettering */
 .atlas-top-label{font-family:'Caveat',cursive;fill:#392a20;font-weight:700;paint-order:stroke fill;stroke:#f0e5cc;stroke-width:3px;stroke-linejoin:round;pointer-events:none;}
 .atlas-top-label-land{font-weight:700;stroke:#f3e8d0;}
+
+/* Shared planet sync status */
+.atlas-sync-banner{padding:10px 20px;background:#eee3c8;border-bottom:1px solid #a18d68;color:#493c2c;font-family:Georgia,serif;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.atlas-sync-banner button{border:1px solid #806e4e;background:#faf4e5;color:#493c2c;padding:5px 10px;cursor:pointer}
+.atlas-sync-banner [role=alert]{color:#922e2a}

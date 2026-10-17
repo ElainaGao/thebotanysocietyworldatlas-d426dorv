@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import App from './App';
-import SharedLands from './SharedLands';
 import { supabase } from './supabase';
 import './AuthGate.css';
+import LiveCommunity from './LiveCommunity';
 
 type Mode = 'signin' | 'signup';
 
@@ -114,7 +114,7 @@ export default function AuthGate() {
           </form>
           {error && <p role="alert" className="atlas-auth-error">{error}</p>}
           {message && <p role="status" className="atlas-auth-message">{message}</p>}
-          <p className="atlas-auth-footnote">Members only · Your map creations are still stored locally during this authentication test.</p>
+          <p className="atlas-auth-footnote">Members only · Atlas geography is shared; personal notes remain private on this device.</p>
         </section>
       </main>
     );
@@ -141,8 +141,8 @@ export default function AuthGate() {
       )}
       {error && <p role="alert" className="atlas-auth-banner">{error}</p>}
       {message && <p role="status" className="atlas-auth-banner">{message}</p>}
-      <SharedLands />
       <App />
+      <LiveCommunity userId={session.user.id} name={profileName} color={cursorColor} />
     </>
   );
 }
