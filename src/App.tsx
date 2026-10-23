@@ -4,6 +4,7 @@ import './App.css';
 import { useSharedAtlas } from './sharedAtlas';
 import { useSharedJournal } from './sharedJournal';
 import LaunchCenter from './LaunchCenter';
+import EcologyWorkspace from './EcologyWorkspace';
 
 
 type P = { x: number; y: number };
@@ -23,7 +24,7 @@ type DepthPatch = { id:string; x:number; y:number; radius:number; depthMeters:nu
 type Climate = { rainfall:number; elevation:number; temperature:number; salinity:string; depth:string; currents:string };
 type Atlas = { lands: Land[]; districts: District[]; plants: Plant[]; biomes: Biome[]; features: Feature[]; waters: Water[]; labels: MapLabel[]; occurrences: { districtId: string; plantId: string }[]; creatures:Creature[]; relations:Relation[]; climates:Record<string,Climate>; depthPatches?:DepthPatch[] }; 
 type Term = { id: string; name: string; description: string; builtin?: boolean; kind?: 'real' | 'magical'; sourceUrl?: string };
-type JournalNote = { id: string; title: string; text: string; image?: string; created: string };
+type JournalNote = { id: string; title: string; text: string; image?: string; created: string; scopeKey?:string };
 type BookPage = 'dictionary' | 'research' | 'notes' | 'lands' | 'plants' | 'creatures' | 'districts' | 'landscapes' | 'waters' | 'labels';
 // Curated real-world vocabulary; an educational starter reference, not a complete taxonomy.
 const STANDARD_TERMS: Term[] = [
@@ -1105,7 +1106,7 @@ export default function App() {
   const inCurrentScope = (r:{landId:string;biomeId?:string}) =>
     activeAquaticBiome ? r.biomeId===activeAquaticBiome.id : !!land && r.landId===land.id;
   const localCreatures=data.creatures.filter(c=>inCurrentScope(c) && (!district || c.districtId===district.id));
-  const organisms=organismScope?[...data.plants.filter(inCurrentScope).map(p=>({id:p.id,name:p.name})),...data.creatures.filter(inCurrentScope).map(c=>({id:c.id,name:c.name}))]:[];
+  const organisms=organismScope?[...data.plants.filter(p=>inCurrentScope(p) && (!district || data.occurrences.some(o=>o.districtId===district.id && o.plantId===p.id))).map(p=>({id:p.id,name:p.name})),...data.creatures.filter(c=>inCurrentScope(c) && (!district || c.districtId===district.id)).map(c=>({id:c.id,name:c.name}))]:[];
   const organismName=(rid:string)=>organisms.find(o=>o.id===rid)?.name||'Unrecorded organism';
   const localPlants = district ? data.occurrences.filter(o => o.districtId === district.id).map(o => data.plants.find(p => p.id === o.plantId)).filter((p): p is Plant => !!p) : organismScope ? data.plants.filter(inCurrentScope) : [];
   const gridX = Array.from({ length: Math.min(201, Math.ceil(width / 100) + 2) }, (_, i) => Math.floor(left / 100) * 100 + i * 100);
@@ -1374,6 +1375,8 @@ export default function App() {
                 <button type="button" onClick={()=>startEdit('plant',p.id,p.name)}>Edit</button>{deleteRow('plant', p.id, p.name + ' and its occurrences everywhere')}
               </div>
             </div>)}
+            <h3>{district ? `Wildlife in ${district.name}` : 'Land Wildlife Records'} ({localCreatures.length})</h3>
+            {localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<p>Biome: {data.biomes.find(b=>b.id===c.biomeId)?.name||'Unassigned'}</p><button type="button" onClick={()=>startEdit('creature',c.id,c.name)}>Edit</button>{deleteRow('creature',c.id,c.name)}</article>)}
             <h3>Biome Regions ({data.biomes.filter(b => b.landId === land.id).length})</h3>
             {data.biomes.filter(b => b.landId === land.id).map(b => <div key={b.id} className="atlas-record-row">
               <span>{b.name} — {b.kind} ({b.realm||'terrestrial'}){b.magical ? ' (magical)' : ''}; districts: {data.districts.filter(d=>d.biomeId===b.id).length}, species: {data.plants.filter(p=>p.biomeId===b.id).length}, wildlife: {data.creatures.filter(c=>c.biomeId===b.id).length}</span>
@@ -1425,7 +1428,7 @@ export default function App() {
             {creatureImage&&<div className="book-upload-preview"><img src={creatureImage} alt="Wildlife illustration preview"/><button type="button" onClick={()=>setCreatureImage('')}>Remove image</button></div>}
             <button type="submit">Register Organism</button>
           </form>
-          {localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<p>Biome: {data.biomes.find(b=>b.id===c.biomeId)?.name||'Unassigned'}</p><button type="button" onClick={()=>startEdit('creature',c.id,c.name)}>Edit</button>{deleteRow('creature', c.id,c.name)}</article>)}
+          {!land && localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<button type="button" onClick={()=>startEdit('creature',c.id,c.name)}>Edit</button>{deleteRow('creature',c.id,c.name)}</article>)}
           </>}
           {organismTab==='relationships' && <><h3>Ecological Relationships</h3>
           <p>Organisms include plants, fungi, algae, and animals together. Connect any two listed species; relationships are descriptive, not yet simulated.</p>
@@ -1436,9 +1439,20 @@ export default function App() {
             <label>Field observation<textarea value={relationNotes} onChange={e=>setRelationNotes(e.target.value)}/></label>
             <button type="submit" disabled={!relationSource||!relationTarget||relationSource===relationTarget}>Save Relationship</button>
           </form>
-          {data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId)).map(r=><div key={r.id} className="atlas-record-row"><span>{organismName(r.sourceId)} — {r.kind} — {organismName(r.targetId)}. {r.description}</span>{deleteRow('relation',r.id,r.kind+' relationship')}</div>)}
+          <p>Saved connections appear in the interactive Food Web below. Manage a relationship here without duplicating the species register.</p>
+          {data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId)).map(r=><div key={r.id} className="atlas-record-row"><span>{organismName(r.sourceId)} — {r.kind} — {organismName(r.targetId)}</span>{deleteRow('relation',r.id,r.kind+' relationship')}</div>)}
           </>}
         </>}
+        {organismScope && <EcologyWorkspace
+          scopeName={district?.name || activeAquaticBiome?.name || land?.name || 'Selected ecosystem'}
+          scopeKey={district ? `district:${district.id}` : activeAquaticBiome ? `biome:${activeAquaticBiome.id}` : `land:${land!.id}`}
+          nodes={organisms.map(o=>({...o,category:data.plants.some(p=>p.id===o.id)?'flora' as const:'fauna' as const}))}
+          links={data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId))}
+          notes={book.notes}
+          onAddNote={note=>setBook(b=>({...b,notes:[note,...b.notes]}))}
+          onDeleteNote={noteId=>setBook(b=>({...b,notes:b.notes.filter(n=>n.id!==noteId)}))}
+          onSelectLink={()=>{}}
+        />}
         {organismScope && <>
           <h3>{activeAquaticBiome ? 'Species of This Aquatic Biome' : 'All Species in This Land'}</h3>
           <p>Deleting a species here removes it from every district that uses it.</p>
