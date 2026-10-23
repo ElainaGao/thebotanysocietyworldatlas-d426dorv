@@ -501,6 +501,7 @@ export default function App() {
   const [plantImage,setPlantImage]=useState('');
   const [organismTab,setOrganismTab]=useState<'plants'|'wildlife'|'relationships'>('plants');
   const [archiveView,setArchiveView]=useState<'botanical'|'history'>('botanical');
+  const [editCreatureGroup,setEditCreatureGroup]=useState('Insect');
   const [editHabitat,setEditHabitat]=useState('');
   const [editPlantTerm,setEditPlantTerm]=useState('');
   const [editPlantBiome,setEditPlantBiome]=useState('');
@@ -1022,7 +1023,7 @@ export default function App() {
     setData(d => ({ ...d, occurrences: [...d.occurrences, { districtId: district.id, plantId: existingPlant }] })); setExistingPlant('');
   }
   function saveEditedRecord(){
-    if(!editTarget)return;
+    if(!editTarget || !atlasSync.canEdit(editTarget.kind,editTarget.id))return;
     const target=editTarget; const label=editName.trim();
     setData(d=>{
       const update=(rows:any[],field:string)=>rows.map(r=>r.id===target.id?{...r,[field]:label,...(['land','district'].includes(target.kind)?{description:editDescription}:{}),...(target.kind==='district'?{image:editDistrictImage||undefined}:{}),...(target.kind==='feature'?{kind:label}:{}),...(['biome','district','depth'].includes(target.kind)?{radius:editRadius}:{}),...(['biome','depth','water','feature'].includes(target.kind)?{depthMeters:editDepth}:{}),...(['land','district','biome','label','feature','depth'].includes(target.kind)?{x:editX,y:editY}:{})}:r);
@@ -1030,7 +1031,7 @@ export default function App() {
       if(target.kind==='district')return {...d,districts:update(d.districts,'name')};
       if(target.kind==='biome')return {...d,biomes:update(d.biomes,'name')};
       if(target.kind==='plant')return {...d,plants:d.plants.map(p=>p.id===target.id?{...p,name:label,habitat:editHabitat,description:editDescription,termId:editPlantTerm||undefined,biomeId:editPlantBiome||undefined,image:editPlantImage||undefined}:p)};
-      if(target.kind==='creature')return {...d,creatures:update(d.creatures,'name')};
+      if(target.kind==='creature')return {...d,creatures:d.creatures.map(c=>c.id===target.id?{...c,name:label,group:editCreatureGroup,habitat:editHabitat,description:editDescription,biomeId:editPlantBiome||undefined,image:editPlantImage||undefined}:c)};
       if(target.kind==='water')return {...d,waters:update(d.waters,'name')};
       if(target.kind==='label')return {...d,labels:update(d.labels,'name')};
       if(target.kind==='feature')return {...d,features:update(d.features,'kind')};
@@ -1038,7 +1039,7 @@ export default function App() {
       return d;
     });setEditTarget(null);
   }
-  function startEdit(kind:string,id:string,currentName:string,desc=''){setEditTarget({kind,id});setEditName(currentName);const editingPlant=data.plants.find(p=>p.id===id);if(kind==='plant'&&editingPlant){setArchiveView('botanical');setEditHabitat(editingPlant.habitat||'');setEditDescription(editingPlant.description||'');setEditPlantTerm(editingPlant.termId||'');setEditPlantBiome(editingPlant.biomeId||'');setEditPlantImage(editingPlant.image||'');}if(kind!=='plant')setEditDescription(kind==='district'?data.districts.find(d=>d.id===id)?.description||'':desc);setEditDistrictImage(kind==='district'?data.districts.find(d=>d.id===id)?.image||'':'');const groups=[...data.lands,...data.districts,...data.biomes,...data.features,...data.waters,...data.labels,...data.plants,...data.creatures,...(data.depthPatches||[])];const found=groups.find(x=>x.id===id);if(found){setEditDepth('depthMeters' in found?Number(found.depthMeters??150):150);setEditRadius('radius' in found?Number(found.radius??35):35);setEditX('x' in found?Number(found.x):0);setEditY('y' in found?Number(found.y):0)}}
+  function startEdit(kind:string,id:string,currentName:string,desc=''){if(!atlasSync.canEdit(kind,id))return;setEditTarget({kind,id});setEditName(currentName);const editingPlant=data.plants.find(p=>p.id===id);if(kind==='plant'&&editingPlant){setArchiveView('botanical');setEditHabitat(editingPlant.habitat||'');setEditDescription(editingPlant.description||'');setEditPlantTerm(editingPlant.termId||'');setEditPlantBiome(editingPlant.biomeId||'');setEditPlantImage(editingPlant.image||'');}if(kind==='creature'){const c=data.creatures.find(c=>c.id===id);if(c){setEditCreatureGroup(c.group||'Other animal');setEditHabitat(c.habitat||'');setEditDescription(c.description||'');setEditPlantBiome(c.biomeId||'');setEditPlantImage(c.image||'');}}if(kind!=='plant'&&kind!=='creature')setEditDescription(kind==='district'?data.districts.find(d=>d.id===id)?.description||'':desc);setEditDistrictImage(kind==='district'?data.districts.find(d=>d.id===id)?.image||'':'');const groups=[...data.lands,...data.districts,...data.biomes,...data.features,...data.waters,...data.labels,...data.plants,...data.creatures,...(data.depthPatches||[])];const found=groups.find(x=>x.id===id);if(found){setEditDepth('depthMeters' in found?Number(found.depthMeters??150):150);setEditRadius('radius' in found?Number(found.radius??35):35);setEditX('x' in found?Number(found.x):0);setEditY('y' in found?Number(found.y):0)}}
   function saveClimate(){
     if(!land)return;
     setData(d=>({...d,climates:{...d.climates,[land.id]:climateDraft}}));
@@ -1054,6 +1055,7 @@ export default function App() {
     setRelationSource('');setRelationTarget('');setRelationNotes('');
   }
   function deleteLand() {
+    if (!land || !atlasSync.canDelete('lands',land.id))return;
     if (!land || !window.confirm(`Delete ${land.name}, including its districts and records?`)) return;
     const districtIds = data.districts.filter(d => d.landId === land.id).map(d => d.id);
     const plantIds = data.plants.filter(p => p.landId === land.id).map(p => p.id);
@@ -1063,7 +1065,7 @@ export default function App() {
   // Every editable record can be removed independently. District removal only clears
   // its local plant associations; deleting a species removes all its associations.
   function removeItem(kind: 'district' | 'plant' | 'biome' | 'feature' | 'water' | 'label' | 'creature' | 'relation', itemId: string, itemName: string) {
-    if (!window.confirm(`Delete ${itemName}? This cannot be undone.`)) return;
+    if (!atlasSync.canDelete(kind,itemId) || !window.confirm(`Delete ${itemName}? This cannot be undone.`)) return;
     setData(previous => {
       switch (kind) {
         case 'district':
@@ -1104,8 +1106,11 @@ export default function App() {
       occurrences: previous.occurrences.filter(x => !(x.districtId === district.id && x.plantId === plantId)),
     }));
   }
+  function editButton(kind:string,itemId:string,displayName:string,caption='Edit') {
+    return atlasSync.canEdit(kind,itemId) ? <button type="button" onClick={()=>startEdit(kind,itemId,displayName)}>{caption}</button> : null;
+  }
   function deleteRow(kind: 'district' | 'plant' | 'biome' | 'feature' | 'water' | 'label' | 'creature' | 'relation', itemId: string, itemName: string) {
-    return <button type="button" className="record-delete" onClick={() => removeItem(kind, itemId, itemName)}>Delete</button>;
+    return atlasSync.canDelete(kind,itemId) ? <button type="button" className="record-delete" onClick={() => removeItem(kind, itemId, itemName)}>Delete</button> : null;
   }
   const selectedWater = data.waters.find(w => w.id === selectedWaterId) || null;
   const selectedFeature = data.features.find(f => f.id === selectedFeatureId) || null;
@@ -1333,27 +1338,27 @@ export default function App() {
           </div>
         </aside>
         </div></section>
-      {editTarget && <div className="atlas-edit-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setEditTarget(null)}}><div role="dialog" aria-modal="true" aria-label={`Edit ${editTarget.kind}`} className="atlas-edit-dialog">{editTarget && <div className="edit-atlas-record"><h3>Edit {editTarget.kind}</h3><label>Name / label<input value={editName} onChange={e=>setEditName(e.target.value)}/></label>{['district','biome','depth'].includes(editTarget.kind)&&<label>Region size<input type="range" min="8" max="180" value={editRadius} onChange={e=>setEditRadius(Number(e.target.value))}/></label>}{['biome','depth','feature'].includes(editTarget.kind)&&<label>{editTarget.kind==='depth'?'Signed terrain change (m)':'Aquatic depth (m)'}<input type="number" value={editDepth} min={editTarget.kind==='depth'?-11000:0} max={editTarget.kind==='depth'?8800:11000} onChange={e=>setEditDepth(Number(e.target.value))}/></label>}{!['water','plant','creature'].includes(editTarget.kind)&&<><label>Map X<input type="number" value={editX} onChange={e=>setEditX(Number(e.target.value))}/></label><label>Map Y<input type="number" value={editY} onChange={e=>setEditY(Number(e.target.value))}/></label></>}{['land','district'].includes(editTarget.kind)&&<label>Description<textarea value={editDescription} onChange={e=>setEditDescription(e.target.value)}/></label>}{editTarget.kind==='district'&&<><label>District image<input type="file" accept="image/*" onChange={e=>void pickImage(e,setEditDistrictImage)}/></label>{editDistrictImage&&<div className="book-upload-preview"><img src={editDistrictImage} alt="District image preview"/><button type="button" onClick={()=>setEditDistrictImage('')}>Remove image</button></div>}</>}{editTarget.kind==='plant'&&<><label>Habitat<input value={editHabitat} onChange={e=>setEditHabitat(e.target.value)}/></label><label>Observations<textarea rows={4} value={editDescription} onChange={e=>setEditDescription(e.target.value)}/></label><label>Classification<select value={editPlantTerm} onChange={e=>setEditPlantTerm(e.target.value)}><option value="">Not classified</option>{terms.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><label>Biome / habitat patch<select value={editPlantBiome} onChange={e=>setEditPlantBiome(e.target.value)}><option value="">Unassigned</option>{data.biomes.filter(b=>b.landId===data.plants.find(p=>p.id===editTarget.id)?.landId).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><label>Botanical illustration<input type="file" accept="image/*" onChange={e=>void pickImage(e,setEditPlantImage)}/></label>{editPlantImage&&<><img className="plant-illustration" src={editPlantImage} alt="Current botanical illustration"/><button type="button" onClick={()=>setEditPlantImage('')}>Remove illustration</button></>}</>}<button type="button" onClick={saveEditedRecord}>Save Changes</button><button type="button" onClick={()=>setEditTarget(null)}>Cancel</button>{editTarget.kind!=='plant'&&<p>Existing geometry can be repositioned with the coordinate fields above.</p>}</div>}</div></div>}
+      {editTarget && atlasSync.canEdit(editTarget.kind,editTarget.id) && <div className="atlas-edit-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setEditTarget(null)}}><div role="dialog" aria-modal="true" aria-label={`Edit ${editTarget.kind}`} className="atlas-edit-dialog">{editTarget && <div className="edit-atlas-record"><h3>Edit {editTarget.kind}</h3><label>Name / label<input value={editName} onChange={e=>setEditName(e.target.value)}/></label>{['district','biome','depth'].includes(editTarget.kind)&&<label>Region size<input type="range" min="8" max="180" value={editRadius} onChange={e=>setEditRadius(Number(e.target.value))}/></label>}{['biome','depth','feature'].includes(editTarget.kind)&&<label>{editTarget.kind==='depth'?'Signed terrain change (m)':'Aquatic depth (m)'}<input type="number" value={editDepth} min={editTarget.kind==='depth'?-11000:0} max={editTarget.kind==='depth'?8800:11000} onChange={e=>setEditDepth(Number(e.target.value))}/></label>}{!['water','plant','creature'].includes(editTarget.kind)&&<><label>Map X<input type="number" value={editX} onChange={e=>setEditX(Number(e.target.value))}/></label><label>Map Y<input type="number" value={editY} onChange={e=>setEditY(Number(e.target.value))}/></label></>}{['land','district'].includes(editTarget.kind)&&<label>Description<textarea value={editDescription} onChange={e=>setEditDescription(e.target.value)}/></label>}{editTarget.kind==='district'&&<><label>District image<input type="file" accept="image/*" onChange={e=>void pickImage(e,setEditDistrictImage)}/></label>{editDistrictImage&&<div className="book-upload-preview"><img src={editDistrictImage} alt="District image preview"/><button type="button" onClick={()=>setEditDistrictImage('')}>Remove image</button></div>}</>}{editTarget.kind==='creature'&&<><label>Creature type<select value={editCreatureGroup} onChange={e=>setEditCreatureGroup(e.target.value)}>{['Insect','Arachnid','Other arthropod','Mammal','Bird','Reptile','Amphibian','Fish','Mollusk','Crustacean','Cnidarian','Echinoderm','Marine invertebrate','Plankton','Other animal','Magical organism'].map(g=><option value={g} key={g}>{g}</option>)}{!['Insect','Arachnid','Other arthropod','Mammal','Bird','Reptile','Amphibian','Fish','Mollusk','Crustacean','Cnidarian','Echinoderm','Marine invertebrate','Plankton','Other animal','Magical organism'].includes(editCreatureGroup)&&<option value={editCreatureGroup}>{editCreatureGroup}</option>}</select></label><label>Habitat<input value={editHabitat} onChange={e=>setEditHabitat(e.target.value)}/></label><label>Observations<textarea rows={4} value={editDescription} onChange={e=>setEditDescription(e.target.value)}/></label><label>Biome / habitat patch<select value={editPlantBiome} onChange={e=>setEditPlantBiome(e.target.value)}><option value="">Unassigned</option>{data.biomes.filter(b=>b.landId===data.creatures.find(c=>c.id===editTarget.id)?.landId).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><label>Creature illustration<input type="file" accept="image/*" onChange={e=>void pickImage(e,setEditPlantImage)}/></label>{editPlantImage&&<img className="plant-illustration" src={editPlantImage} alt="Current creature illustration"/>}</>}{editTarget.kind==='plant'&&<><label>Habitat<input value={editHabitat} onChange={e=>setEditHabitat(e.target.value)}/></label><label>Observations<textarea rows={4} value={editDescription} onChange={e=>setEditDescription(e.target.value)}/></label><label>Classification<select value={editPlantTerm} onChange={e=>setEditPlantTerm(e.target.value)}><option value="">Not classified</option>{terms.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><label>Biome / habitat patch<select value={editPlantBiome} onChange={e=>setEditPlantBiome(e.target.value)}><option value="">Unassigned</option>{data.biomes.filter(b=>b.landId===data.plants.find(p=>p.id===editTarget.id)?.landId).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><label>Botanical illustration<input type="file" accept="image/*" onChange={e=>void pickImage(e,setEditPlantImage)}/></label>{editPlantImage&&<><img className="plant-illustration" src={editPlantImage} alt="Current botanical illustration"/><button type="button" onClick={()=>setEditPlantImage('')}>Remove illustration</button></>}</>}<button type="button" onClick={saveEditedRecord}>Save Changes</button><button type="button" onClick={()=>setEditTarget(null)}>Cancel</button>{editTarget.kind!=='plant'&&<p>Existing geometry can be repositioned with the coordinate fields above.</p>}</div>}</div></div>}
       <section className="atlas-workspace"><div className="atlas-panel"><p className="panel-kicker">THE CARTOGRAPHER'S DESK</p>
           {selectedWater && <section className="selected-water-panel">
             <h2>Selected Waterbody: {selectedWater.name}</h2>
             <p>{selectedWater.kind === 'river' ? 'River' : 'Pond / Lake'} · {selectedWater.points.length} charted points · Depth {selectedWater.depthMeters ?? 150} m</p>
             <div className="atlas-record-actions">
-              <button type="button" onClick={() => startEdit('water',selectedWater.id,selectedWater.name)}>Edit Waterbody</button>
-              <button type="button" className="record-delete" onClick={() => removeItem('water', selectedWater.id, selectedWater.name)}>Delete Waterbody</button>
+              {editButton('water',selectedWater.id,selectedWater.name,'Edit Waterbody')}
+              {atlasSync.canDelete('waters',selectedWater.id)&&<button type="button" className="record-delete" onClick={() => removeItem('water', selectedWater.id, selectedWater.name)}>Delete Waterbody</button>}
               <button type="button" onClick={() => setSelectedWaterId(null)}>Deselect</button>
             </div>
           </section>}
           <details className="terrain-records"><summary>Land Elevation & Depression Regions ({(data.depthPatches||[]).length})</summary>
-            {(data.depthPatches||[]).map(dp=><div className="atlas-record-row" key={dp.id}><span>{dp.name} · signed change {dp.depthMeters} m</span><button type="button" onClick={()=>startEdit('depth',dp.id,dp.name)}>Edit</button><button type="button" className="record-delete" onClick={()=>{if(window.confirm(`Delete terrain region ${dp.name}?`))setData(d=>({...d,depthPatches:(d.depthPatches||[]).filter(p=>p.id!==dp.id)}))}}>Delete</button></div>)}
+            {(data.depthPatches||[]).map(dp=><div className="atlas-record-row" key={dp.id}><span>{dp.name} · signed change {dp.depthMeters} m</span>{editButton('depth',dp.id,dp.name)}{atlasSync.canDelete('depthPatches',dp.id)&&<button type="button" className="record-delete" onClick={()=>{if(window.confirm(`Delete terrain region ${dp.name}?`))setData(d=>({...d,depthPatches:(d.depthPatches||[]).filter(p=>p.id!==dp.id)}))}}>Delete</button>}</div>)}
           </details>
 
         {tool === 'explore' && <>
           <h2>{district ? district.name : land ? land.name : 'Uncharted Waters'}</h2>
           <p>{district ? `District of ${land?.name||activeAquaticBiome?.name||'Open Ocean'}` : land ? `${latitudeLabel(land.y)} · ${land.biome} · ${land.size || 'Medium'}` : 'Select a land or create one to begin.'}</p>
-          {district && <section className="district-profile"><h3>District Profile</h3>{district.description ? <p>{district.description}</p> : <p>No description recorded yet.</p>}{district.image && <img className="district-profile-image" src={district.image} alt={`Illustration of ${district.name}`} />}<div className="atlas-record-actions"><button type="button" onClick={()=>startEdit('district',district.id,district.name)}>Edit Description / Image</button>{deleteRow('district',district.id,district.name)}</div></section>}
-          {!land && activeAquaticBiome && <><h2>{activeAquaticBiome.name}</h2><p>Selected aquatic biome · Organism Register is available to the right.</p><button onClick={()=>startEdit('biome',activeAquaticBiome.id,activeAquaticBiome.name)}>Edit Biome</button></>}
-          {!land && <><h3>Open Ocean Biome Regions</h3>{data.biomes.filter(b=>!b.landId).map(b=><div key={b.id} className="atlas-record-row"><span>{b.name} ({b.kind})</span><button onClick={()=>startEdit('biome',b.id,b.name)}>Edit</button><button className="record-delete" onClick={()=>{if(window.confirm(`Delete biome ${b.name}?`))setData(d=>({...d,biomes:d.biomes.filter(x=>x.id!==b.id)}))}}>Delete</button></div>)}</>}{district && !land && <><p>Independent offshore district · {latitudeLabel(district.y)}</p></>}
+          {district && <section className="district-profile"><h3>District Profile</h3>{district.description ? <p>{district.description}</p> : <p>No description recorded yet.</p>}{district.image && <img className="district-profile-image" src={district.image} alt={`Illustration of ${district.name}`} />}<div className="atlas-record-actions">{editButton('district',district.id,district.name,'Edit Description / Image')}{deleteRow('district',district.id,district.name)}</div></section>}
+          {!land && activeAquaticBiome && <><h2>{activeAquaticBiome.name}</h2><p>Selected aquatic biome · Organism Register is available to the right.</p>{editButton('biome',activeAquaticBiome.id,activeAquaticBiome.name,'Edit Biome')}</>}
+          {!land && <><h3>Open Ocean Biome Regions</h3>{data.biomes.filter(b=>!b.landId).map(b=><div key={b.id} className="atlas-record-row"><span>{b.name} ({b.kind})</span>{editButton('biome',b.id,b.name)}{deleteRow('biome',b.id,b.name)}</div>)}</>}{district && !land && <><p>Independent offshore district · {latitudeLabel(district.y)}</p></>}
           {land && <>
             <p>{land.description}</p>          <h3>Local Climate & Oceanography</h3>
           <p>Latitude: {latitudeLabel(land.y)} · longitude: {longitudeAt(land.x).toFixed(1)}°. These are broad ecological guides, not a physical climate simulation.</p>
@@ -1367,11 +1372,11 @@ export default function App() {
           <button type="button" onClick={saveClimate}>Save Climate for This Land</button>
           <p>Current saved conditions: {climate.rainfall} mm rain, {climate.temperature}°C, {climate.salinity} local water conditions.</p>
 
-          <button type="button" onClick={()=>startEdit('land',land.id,land.name,land.description)}>Edit Land Name / Description</button>
+          {atlasSync.canEdit('lands',land.id)&&<button type="button" onClick={()=>startEdit('land',land.id,land.name,land.description)}>Edit Land Name / Description</button>}
             <h3>Districts</h3>
             {data.districts.filter(d => d.landId === land.id).map(d => <div className="atlas-record-row" key={d.id}>
               <button type="button" onClick={() => setSelectedDistrictId(d.id)}>{d.name}{d.biomeId ? ` · ${data.biomes.find(b=>b.id===d.biomeId)?.name||'Biome removed'}` : ''}{selectedDistrictId === d.id ? ' (selected)' : ''}</button>
-              <button type="button" onClick={()=>startEdit('district',d.id,d.name)}>Edit</button>{deleteRow('district', d.id, d.name)}
+              {editButton('district',d.id,d.name)}{deleteRow('district', d.id, d.name)}
             </div>)}
             {district && <button type="button" onClick={() => setSelectedDistrictId(null)}>Back to Whole Land</button>}
             <h3>{district ? `Plants in ${district.name}` : 'Land Plant Records'} ({localPlants.length})</h3>
@@ -1379,30 +1384,30 @@ export default function App() {
               <strong>{p.name}</strong><p>Classification: {findTerm(p.termId)} · Biome: {data.biomes.find(b=>b.id===p.biomeId)?.name||'Unassigned'}</p><p>{p.habitat}</p><p>{p.description}</p>{p.image&&<img className="plant-illustration" src={p.image} alt={`Illustration of ${p.name}`}/>}
               <div className="atlas-record-actions">
                 {district && <button className="record-delete" type="button" onClick={() => detachPlant(p.id)}>Remove from District</button>}
-                <button type="button" onClick={()=>startEdit('plant',p.id,p.name)}>Edit</button>{deleteRow('plant', p.id, p.name + ' and its occurrences everywhere')}
+                {editButton('plant',p.id,p.name)}{deleteRow('plant', p.id, p.name + ' and its occurrences everywhere')}
               </div>
             </div>)}
             <h3>{district ? `Wildlife in ${district.name}` : 'Land Wildlife Records'} ({localCreatures.length})</h3>
-            {localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<p>Biome: {data.biomes.find(b=>b.id===c.biomeId)?.name||'Unassigned'}</p><button type="button" onClick={()=>startEdit('creature',c.id,c.name)}>Edit</button>{deleteRow('creature',c.id,c.name)}</article>)}
+            {localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<p>Biome: {data.biomes.find(b=>b.id===c.biomeId)?.name||'Unassigned'}</p>{editButton('creature',c.id,c.name)}{deleteRow('creature',c.id,c.name)}</article>)}
             <h3>Biome Regions ({data.biomes.filter(b => b.landId === land.id).length})</h3>
             {data.biomes.filter(b => b.landId === land.id).map(b => <div key={b.id} className="atlas-record-row">
               <span>{b.name} — {b.kind} ({b.realm||'terrestrial'}){b.magical ? ' (magical)' : ''}; districts: {data.districts.filter(d=>d.biomeId===b.id).length}, species: {data.plants.filter(p=>p.biomeId===b.id).length}, wildlife: {data.creatures.filter(c=>c.biomeId===b.id).length}</span>
-              <button type="button" onClick={()=>startEdit('biome',b.id,b.name)}>Edit</button>{deleteRow('biome', b.id, b.name)}
+              {editButton('biome',b.id,b.name)}{deleteRow('biome', b.id, b.name)}
             </div>)}
             <h3>Landscape Markers ({data.features.filter(f => f.landId === land.id).length})</h3>
             {data.features.filter(f => f.landId === land.id).map(f => <div key={f.id} className="atlas-record-row">
-              <span>{f.kind}</span><button type="button" onClick={()=>startEdit('feature',f.id,f.kind)}>Edit</button>{deleteRow('feature', f.id, f.kind + ' marker')}
+              <span>{f.kind}</span>{editButton('feature',f.id,f.kind)}{deleteRow('feature', f.id, f.kind + ' marker')}
             </div>)}
             <h3>Rivers, Ponds & Lakes ({data.waters.filter(w => w.landId === land.id).length})</h3>
             {data.waters.filter(w => w.landId === land.id).map(w => <div key={w.id} className="atlas-record-row">
-              <span>{w.name} ({w.kind})</span><button type="button" onClick={()=>startEdit('water',w.id,w.name)}>Edit</button>{deleteRow('water', w.id, w.name)}
+              <span>{w.name} ({w.kind})</span>{editButton('water',w.id,w.name)}{deleteRow('water', w.id, w.name)}
             </div>)}
             <h3>Map Labels ({data.labels.filter(x => x.landId === land.id).length})</h3>
             {data.labels.filter(x => x.landId === land.id).map(x => <div key={x.id} className="atlas-record-row">
-              <span>{x.name}</span><button type="button" onClick={()=>startEdit('label',x.id,x.name)}>Edit</button>{deleteRow('label', x.id, x.name)}
+              <span>{x.name}</span>{editButton('label',x.id,x.name)}{deleteRow('label', x.id, x.name)}
             </div>)}
             <h3>Whole Land</h3>
-            <button type="button" className="delete-land-button" onClick={deleteLand}>Delete This Land and Its Contents</button>
+            {atlasSync.canDelete('lands',land.id)&&<button type="button" className="delete-land-button" onClick={deleteLand}>Delete This Land and Its Contents</button>}
           </>}
         </>}
         {tool === 'drawocean' && <><h2>Draw Ocean / Cut Coastline</h2><p>Trace a closed region. Where your region overlaps a land you own or are allowed to edit, the land becomes ocean. The rest of the land and its records remain intact.</p><div className="coast-brush-tools"><button className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button><small>{drawing.length} points</small></div><button type="button" disabled={drawing.length<3} onClick={finishOcean}>Apply Ocean Cutout</button><button onClick={()=>setDrawing([])}>Clear Draft</button></>}
@@ -1412,7 +1417,7 @@ export default function App() {
         {tool === 'explore' && selectedFeature && <section className="selected-landscape-record" aria-label="Selected landscape">
           <h2>Selected Landscape · {selectedFeature.kind}</h2>
           <p>{selectedFeature.landId ? `Land: ${data.lands.find(l=>l.id===selectedFeature.landId)?.name || 'Open ocean'}` : 'Open ocean'} · {selectedFeature.depthMeters != null ? `Depth: ${selectedFeature.depthMeters} m` : 'Surface landscape'}</p>
-          <button type="button" onClick={()=>startEdit('feature',selectedFeature.id,selectedFeature.kind)}>Edit Landscape</button>
+          {editButton('feature',selectedFeature.id,selectedFeature.kind,'Edit Landscape')}
           {deleteRow('feature',selectedFeature.id,selectedFeature.kind+' landscape')}
           <button type="button" onClick={()=>setSelectedFeatureId(null)}>Deselect</button>
         </section>}
@@ -1448,7 +1453,7 @@ export default function App() {
             {creatureImage&&<div className="book-upload-preview"><img src={creatureImage} alt="Wildlife illustration preview"/><button type="button" onClick={()=>setCreatureImage('')}>Remove image</button></div>}
             <button type="submit">Register Organism</button>
           </form>
-          {!land && localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}<button type="button" onClick={()=>startEdit('creature',c.id,c.name)}>Edit</button>{deleteRow('creature',c.id,c.name)}</article>)}
+          {!land && localCreatures.map(c=><article key={c.id} className="plant-record"><strong>{c.name} · {c.group}</strong><p>{c.habitat} — {c.description}</p>{c.image&&<img className="plant-illustration" src={c.image} alt={c.name}/>}{editButton('creature',c.id,c.name)}{deleteRow('creature',c.id,c.name)}</article>)}
           </>}
           {organismTab==='relationships' && <><h3>Ecological Relationships</h3>
           <p>Organisms include plants, fungi, algae, and animals together. Connect any two listed species; relationships are descriptive, not yet simulated.</p>
@@ -1472,7 +1477,7 @@ export default function App() {
           <h3>{activeAquaticBiome ? 'Species of This Aquatic Biome' : 'All Species in This Land'}</h3>
           <p>Deleting a species here removes it from every district that uses it.</p>
           {data.plants.filter(inCurrentScope).map(p =>
-            <div key={p.id} className="atlas-record-row"><span>{p.name}</span><button type="button" onClick={()=>startEdit('plant',p.id,p.name)}>Edit</button>{deleteRow('plant', p.id, p.name)}</div>
+            <div key={p.id} className="atlas-record-row"><span>{p.name}</span>{editButton('plant',p.id,p.name)}{deleteRow('plant', p.id, p.name)}</div>
           )}
         </>}
       </div>}

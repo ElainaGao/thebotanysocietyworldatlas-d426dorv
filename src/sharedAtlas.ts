@@ -58,7 +58,7 @@ const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
 export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=>T):[
   T,Dispatch<SetStateAction<T>>,{
     ready:boolean; saving:boolean;connected:boolean;error:string;legacyCount:number;remoteRevision:number;
-    importLegacy:()=>Promise<void>;importFile:(file:File)=>Promise<void>;refresh:()=>Promise<void>;
+    importLegacy:()=>Promise<void>;importFile:(file:File)=>Promise<void>;refresh:()=>Promise<void>;canEdit:(kind:string,id:string)=>boolean;canDelete:(kind:string,id:string)=>boolean;
   }
 ]{
   const [data,setRaw]=useState<T>(empty);
@@ -80,6 +80,9 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
   const importRunning=useRef(false);
   const [changeToken,setChangeToken]=useState(0);
   const [remoteRevision,setRemoteRevision]=useState(0);
+  const [permissionRevision,setPermissionRevision]=useState(0);
+  const KIND_MAP:Record<string,string>={land:'lands',district:'districts',plant:'plants',biome:'biomes',feature:'features',water:'waters',label:'labels',creature:'creatures',relation:'relations',depth:'depthPatches'};
+  const hasPermission=(kind:string,id:string,permission:'can_edit'|'can_delete')=>{void permissionRevision;const row=base.current.get(rowKey(KIND_MAP[kind]||kind,id));return !!row&&canAccess(row.creator_id,permission);};
 
   // All normal atlas handlers still use setData. Block edits/deletes to other
   // creators' objects in the UI as well as enforcing ownership in PostgreSQL.
@@ -106,11 +109,12 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
       .select('owner_id,friend_id,can_edit,can_delete').eq('friend_id',userRef.current);
     if(failure){setError('Could not check friend permissions: '+failure.message);return;}
     grantsRef.current=new Map((data||[]).map(g=>[g.owner_id,{can_edit:g.can_edit,can_delete:g.can_delete}]));
+    setPermissionRevision(n=>n+1);
   },[]);
   const refreshModerator=useCallback(async()=>{
     if(!userRef.current)return;
     const {data,error:failure}=await supabase.from('atlas_moderators').select('enabled').eq('user_id',userRef.current).maybeSingle();
-    if(!failure) moderatorRef.current=!!data?.enabled;
+    if(!failure){moderatorRef.current=!!data?.enabled;setPermissionRevision(n=>n+1);}
   },[]);
   const refresh=useCallback(async()=>{
     if(flushing.current){queuedRemote.current=true;return;}
@@ -266,5 +270,5 @@ export function useSharedAtlas<T extends WorldShape>(empty:()=>T, loadLegacy:()=
     setRaw(fromRows(empty,[...base.current.values()]));
   },[refresh]);
 
-  return [data,setData,{ready,saving,connected,error,legacyCount,remoteRevision,importLegacy,importFile,refresh}];
+  return [data,setData,{ready,saving,connected,error,legacyCount,remoteRevision,importLegacy,importFile,refresh,canEdit:(kind,id)=>hasPermission(kind,id,'can_edit'),canDelete:(kind,id)=>hasPermission(kind,id,'can_delete')}];
 }
