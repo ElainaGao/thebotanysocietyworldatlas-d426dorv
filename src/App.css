@@ -226,3 +226,16 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 /* v24 mobile explorer */
 @media(max-width:760px){.page{max-width:100%;padding:12px 9px;overflow-x:hidden}.hero h1{font-size:clamp(2.3rem,11vw,4.2rem)}.controls{display:flex;flex-wrap:wrap;justify-content:center;gap:7px}.controls button{flex:1 1 auto;min-height:44px;padding:9px 12px;font-size:15px}.map-frame,.atlas-map-shell,.map-surface{max-width:100%;min-width:0}.atlas-map.atlas-map-drawing{touch-action:none}.atlas-sync-banner{overflow-wrap:anywhere;gap:8px}.atlas-sync-banner input[type=file]{max-width:100%}.atlas-instruction,.atlas-shortcuts{text-align:center}}
 @media(max-width:760px){.atlas-member-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 10px}.atlas-member-actions{display:flex;flex-wrap:wrap;align-items:center;gap:7px}.atlas-member-actions button{min-height:40px}.atlas-profile-editor{max-width:100%;box-sizing:border-box;padding:12px}.atlas-profile-editor input{max-width:100%}}
+
+/* Unified Botanical Register / Natural History Archive panel */
+.atlas-records-switcher { min-width:0; }
+.atlas-archive-switch { display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px; }
+.atlas-archive-switch button {padding:12px 8px;background:#e5d3b1;color:#543f2b;border:2px solid #987e5b;cursor:pointer;font:1.12rem 'IM Fell English',Georgia,serif;}
+.atlas-archive-switch button.selected {background:#67543b;color:#fff1d5;border-color:#4d3b29;}
+.atlas-records-switcher > .atlas-panel,.atlas-records-switcher > .science-studio {width:100%;box-sizing:border-box;}
+/* Editing dialog always appears, including when Edit is clicked in the left records column */
+.atlas-edit-backdrop {position:fixed;inset:0;background:rgba(33,26,16,.6);z-index:10000;display:flex;justify-content:center;align-items:center;padding:16px;box-sizing:border-box;}
+.atlas-edit-dialog {width:min(610px,100%);max-height:min(90vh,900px);overflow:auto;background:#f0dfb9;border:3px solid #7e6240;box-shadow:0 12px 60px #23180f77;padding:15px;box-sizing:border-box;}
+.atlas-edit-dialog .edit-atlas-record {margin:0;}
+.atlas-edit-dialog select {width:100%;box-sizing:border-box;padding:9px;background:#fff4d8;color:#453422;border:1px solid #9b815a;}
+@media(max-width:740px){.atlas-archive-switch button{font-size:.94rem;padding:10px 4px;}.atlas-edit-dialog{max-height:95vh;padding:8px;}}
