@@ -43,7 +43,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 
 /* v3: smoother drawn water and merging coastlines */
 .merge-seams { pointer-events: none; }
-.atlas-map path { vector-effect: none; }
+/* SVG paths use their default scaling; no vector-effect override needed. */
 
 /* v5 — Delete controls for every cartographic record */
 .atlas-record-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px dotted #ab9674; font-family:'Caveat',cursive; font-size:1.45rem; }
