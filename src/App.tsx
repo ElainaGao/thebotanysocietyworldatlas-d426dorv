@@ -3,6 +3,7 @@ import type { FormEvent, PointerEvent } from 'react';
 import './App.css';
 import { useSharedAtlas } from './sharedAtlas';
 import { useSharedJournal } from './sharedJournal';
+import LaunchCenter from './LaunchCenter';
 
 
 type P = { x: number; y: number };
@@ -1124,6 +1125,27 @@ export default function App() {
   const landPaths = useMemo(() => new Map(data.lands.map(l => [l.id, landShape(l)])), [data.lands]);
   const joinedSeams = useMemo(() => data.lands.flatMap(l => seams(l, data.lands)), [data.lands]);
   const biomePaths = useMemo(() => new Map(data.biomes.map(b => [b.id, closedPath(biomeOutline(b))])), [data.biomes]);
+  useEffect(()=>{
+    const go=(event:Event)=>{
+      const {x,y}=(event as CustomEvent<{x:number;y:number}>).detail;
+      if(Number.isFinite(x)&&Number.isFinite(y)){
+        setView(v=>({...v,x,y,zoom:Math.max(v.zoom,1.5)}));
+        document.querySelector('.map-frame')?.scrollIntoView({behavior:'smooth',block:'start'});
+      }
+    };
+    window.addEventListener('atlas-jump-to',go);
+    return ()=>window.removeEventListener('atlas-jump-to',go);
+  },[]);
+  const launchItems=useMemo(()=>[
+    ...data.lands.map(r=>({...r,kind:'lands'})),
+    ...data.districts.map(r=>({...r,kind:'districts'})),
+    ...data.biomes.map(r=>({...r,kind:'biomes'})),
+    ...data.plants.map(r=>({...r,kind:'plants'})),
+    ...data.creatures.map(r=>({...r,kind:'creatures'})),
+    ...data.features.map(r=>({...r,name:r.kind,kind:'features'})),
+    ...data.waters.map(r=>({...r,kind:'waters'})),
+    ...data.labels.map(r=>({...r,kind:'labels'}))
+  ],[data]);
   const waterPaths = useMemo(() => new Map(data.waters.map(w => [w.id, w.kind === 'pond' ? closedPath(w.points) : openPath(w.points)])), [data.waters]);
   const terrainPaths = useMemo(() => new Map((data.depthPatches || []).map(p => [p.id, closedPath(terrainOutline(p))])), [data.depthPatches]);
   const visibleNames=showNames?arrangeNames(allNames,view,mapPixelWidth,mapPixelHeight):[];
@@ -1139,6 +1161,7 @@ export default function App() {
         {bookSync.legacyCount > 0 && <span><button type="button" onClick={bookSync.importLegacy} disabled={!bookSync.ready}>Import previous journal</button></span>}
         <label className="atlas-import-label">Import journal JSON <input type="file" accept="application/json,.json" disabled={!bookSync.ready} onChange={async e=>{const f=e.target.files?.[0];if(f)await bookSync.importFile(f);e.target.value='';}}/></label>
       </section>
+      <LaunchCenter items={launchItems} />
       <header className="hero"><p className="eyebrow">The Botany Society · Cartographic Archive</p><h1>World Atlas</h1><p className="subtitle">An illustrated record of imaginary lands and botanical life.</p></header>
       <nav className="controls">
         {(['explore','land','drawland','drawocean','district','biome','feature','river','pond','label','depth'] as Tool[]).map(t => <button className={tool === t ? 'tool-active' : ''} key={t} onClick={() => { if (t !== 'explore' && t !== 'land' && t !== 'drawland' && t !== 'drawocean' && !['biome','district','feature','depth'].includes(t) && !land) return alert('Select an existing land first.'); changeTool(t); }}>{({ explore:'Explore', land:'Auto Land', drawland:'Draw Land', drawocean:'Draw Ocean', district:'District', biome:'Biome', feature:'Landscape', river:'Draw River', pond:'Draw Pond', label:'Place Label',depth:'Land Elevation / Depression' } as Record<Tool,string>)[t]}</button>)}

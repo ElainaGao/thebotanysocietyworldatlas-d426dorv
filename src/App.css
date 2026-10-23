@@ -223,3 +223,6 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 
 /* Visible feature verification for version 17 */
 .atlas-release-marker { display:block !important; text-align:center; font-weight:700; padding:7px 12px; width:max-content; max-width:calc(100% - 24px); margin:8px auto; }
+/* v24 mobile explorer */
+@media(max-width:760px){.page{max-width:100%;padding:12px 9px;overflow-x:hidden}.hero h1{font-size:clamp(2.3rem,11vw,4.2rem)}.controls{display:flex;flex-wrap:wrap;justify-content:center;gap:7px}.controls button{flex:1 1 auto;min-height:44px;padding:9px 12px;font-size:15px}.map-frame,.atlas-map-shell,.map-surface{max-width:100%;min-width:0}.atlas-map.atlas-map-drawing{touch-action:none}.atlas-sync-banner{overflow-wrap:anywhere;gap:8px}.atlas-sync-banner input[type=file]{max-width:100%}.atlas-instruction,.atlas-shortcuts{text-align:center}}
+@media(max-width:760px){.atlas-member-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 10px}.atlas-member-actions{display:flex;flex-wrap:wrap;align-items:center;gap:7px}.atlas-member-actions button{min-height:40px}.atlas-profile-editor{max-width:100%;box-sizing:border-box;padding:12px}.atlas-profile-editor input{max-width:100%}}
