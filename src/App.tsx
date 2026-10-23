@@ -1441,18 +1441,13 @@ export default function App() {
           </form>
           <p>Saved connections appear in the interactive Food Web below. Manage a relationship here without duplicating the species register.</p>
           {data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId)).map(r=><div key={r.id} className="atlas-record-row"><span>{organismName(r.sourceId)} — {r.kind} — {organismName(r.targetId)}</span>{deleteRow('relation',r.id,r.kind+' relationship')}</div>)}
+          <EcologyWorkspace
+            scopeName={district?.name || activeAquaticBiome?.name || land?.name || 'Selected ecosystem'}
+            nodes={organisms.map(o=>({...o,category:data.plants.some(p=>p.id===o.id)?'flora' as const:'fauna' as const}))}
+            links={data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId))}
+          />
           </>}
         </>}
-        {organismScope && <EcologyWorkspace
-          scopeName={district?.name || activeAquaticBiome?.name || land?.name || 'Selected ecosystem'}
-          scopeKey={district ? `district:${district.id}` : activeAquaticBiome ? `biome:${activeAquaticBiome.id}` : `land:${land!.id}`}
-          nodes={organisms.map(o=>({...o,category:data.plants.some(p=>p.id===o.id)?'flora' as const:'fauna' as const}))}
-          links={data.relations.filter(r=>r.landId===scopeLandId && organisms.some(o=>o.id===r.sourceId) && organisms.some(o=>o.id===r.targetId))}
-          notes={book.notes}
-          onAddNote={note=>setBook(b=>({...b,notes:[note,...b.notes]}))}
-          onDeleteNote={noteId=>setBook(b=>({...b,notes:b.notes.filter(n=>n.id!==noteId)}))}
-          onSelectLink={()=>{}}
-        />}
         {organismScope && <>
           <h3>{activeAquaticBiome ? 'Species of This Aquatic Biome' : 'All Species in This Land'}</h3>
           <p>Deleting a species here removes it from every district that uses it.</p>
