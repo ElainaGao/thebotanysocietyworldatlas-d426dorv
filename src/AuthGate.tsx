@@ -6,6 +6,7 @@ import './AuthGate.css';
 import LiveCommunity from './LiveCommunity';
 import FriendsPanel from './FriendsPanel';
 import ModerationPanel from './ModerationPanel';
+import SocialInbox from './SocialInbox';
 
 type Mode = 'signin' | 'signup';
 
@@ -163,6 +164,7 @@ export default function AuthGate() {
         <span className="atlas-member-identity"><span className="atlas-member-dot" style={{ background: cursorColor }} /> {profileName} <span className="atlas-member-caption">· @{username}</span></span>
         <div className="atlas-member-actions" data-friends-header="true">
           <FriendsPanel userId={session.user.id} />
+          <SocialInbox userId={session.user.id} />
           <ModerationPanel userId={session.user.id} />
           <button type="button" onClick={() => {setEditingProfile(v => !v); setMessage('');}}>My Profile</button>
           <button type="button" disabled={busy} onClick={signOut}>Sign Out</button>
