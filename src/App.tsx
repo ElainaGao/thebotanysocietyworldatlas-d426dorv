@@ -22,7 +22,7 @@ type Water = { id: string; landId: string; kind: 'river' | 'pond'; name: string;
 type MapLabel = { id: string; landId: string; x: number; y: number; name: string };
 type Creature = { id:string; landId:string; districtId?:string; biomeId?:string; name:string; group:string; description:string; habitat:string; image?:string };
 type Relation = { id:string; landId:string; sourceId:string; targetId:string; kind:string; description:string };
-type DepthPatch = { id:string; x:number; y:number; radius:number; depthMeters:number; name:string; seed?:string }; // signed meters: positive = terrain raised, negative = terrain lowered
+type DepthPatch = { id:string; x:number; y:number; radius:number; depthMeters:number; name:string; seed?:string; outline?:P[]; contours?:P[][]; density?:number }; // signed meters: positive = terrain raised, negative = terrain lowered
 type Climate = { rainfall:number; elevation:number; temperature:number; salinity:string; depth:string; currents:string };
 type Atlas = { lands: Land[]; districts: District[]; plants: Plant[]; biomes: Biome[]; features: Feature[]; waters: Water[]; labels: MapLabel[]; occurrences: { districtId: string; plantId: string }[]; creatures:Creature[]; relations:Relation[]; climates:Record<string,Climate>; depthPatches?:DepthPatch[] }; 
 type Term = { id: string; name: string; description: string; builtin?: boolean; kind?: 'real' | 'magical'; sourceUrl?: string };
@@ -130,11 +130,26 @@ function terrainAt(p:P, patches:DepthPatch[]){
  },0),MIN_HEIGHT,MAX_HEIGHT);
 }
 function terrainOutline(p:DepthPatch):P[]{
+ if(p.outline && p.outline.length>=3) return p.outline;
  const hash=[...(p.seed||p.id)].reduce((n,c)=>n+c.charCodeAt(0),0);
  return Array.from({length:48},(_,i)=>{
    const a=i*Math.PI*2/48;
    const r=p.radius*(1+.12*Math.sin(5*a+hash)+.09*Math.cos(8*a+hash*.23)+.035*Math.sin(11*a+hash*.7));
    return {x:p.x+Math.cos(a)*r,y:p.y+Math.sin(a)*r*.83};
+ });
+}
+// Authored contour geometry is independent of the terrain height model.
+// Simplification limits the number of draggable nodes from tablet strokes.
+function simplifiedOutline(points:P[], limit=24):P[]{
+ if(points.length<=limit)return points.map(p=>({...p}));
+ return Array.from({length:limit},(_,i)=>({...points[Math.floor(i*points.length/limit)]}));
+}
+function contourBands(boundary:P[], count:number):P[][]{
+ const pts=simplifiedOutline(boundary,32);
+ const cx=pts.reduce((v,p)=>v+p.x,0)/pts.length,cy=pts.reduce((v,p)=>v+p.y,0)/pts.length;
+ return Array.from({length:count},(_,i)=>{
+   const scale=0.16+0.78*(i+1)/(count+1);
+   return pts.map(p=>({x:cx+(p.x-cx)*scale,y:cy+(p.y-cy)*scale}));
  });
 }
 function terrainTint(meters:number, onLand:boolean){
@@ -463,6 +478,10 @@ export default function App() {
   const [waterWidth, setWaterWidth] = useState(7);
   const [depthMeters,setDepthMeters]=useState(1200);
   const [depthRadius,setDepthRadius]=useState(48);
+  const [contourDensity,setContourDensity]=useState(6);
+  const [terrainEditingId,setTerrainEditingId]=useState<string|null>(null);
+  const [contourSelection,setContourSelection]=useState(0);
+  const contourDrag=useRef<{pointerId:number;ring:number;node:number}|null>(null);
   const [showTopography,setShowTopography]=useState(true);
   const [,setElevationDraft]=useState(200);
   const [editName,setEditName]=useState('');
@@ -821,7 +840,7 @@ export default function App() {
     if(coastStroke.current)coastStroke.current.last=p;
   }
   function down(e: PointerEvent<SVGSVGElement>) {
-    if (tool==='drawland'||tool==='drawocean'||tool==='pond'){
+    if (tool==='drawland'||tool==='drawocean'||tool==='pond'||(tool==='depth'&&!terrainEditingId)){
       if(tool==='pond' && (!land || !insideLand(screenPoint(e.clientX,e.clientY),land))) {
         if(!land) window.alert('Select a land in Explore mode before drawing a pond.');
         return;
@@ -838,7 +857,17 @@ export default function App() {
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function move(e: PointerEvent<SVGSVGElement>) {
-    if((tool==='drawland'||tool==='drawocean'||tool==='pond')&&coastStroke.current?.pointerId===e.pointerId){paintCoast(e,false);return;}
+    if(contourDrag.current?.pointerId===e.pointerId && terrainEditingId){
+      const {ring,node}=contourDrag.current;
+      const p=screenPoint(e.clientX,e.clientY);
+      setData(d=>({...d,depthPatches:(d.depthPatches||[]).map(t=>{
+        if(t.id!==terrainEditingId)return t;
+        const contours=(t.contours||contourBands(terrainOutline(t),t.density||6)).map(line=>line.map(q=>({...q})));
+        if(contours[ring]?.[node])contours[ring][node]=p;
+        return {...t,contours};
+      })}));return;
+    }
+    if((tool==='drawland'||tool==='drawocean'||tool==='pond'||tool==='depth')&&coastStroke.current?.pointerId===e.pointerId){paintCoast(e,false);return;}
     if (!drag.current || !svg.current) return;
     const d = drag.current, dx = e.clientX - d.x, dy = e.clientY - d.y;
     if (Math.hypot(dx, dy) > 5) d.moved = true;
@@ -847,6 +876,7 @@ export default function App() {
     setView({ ...d.view, x: d.view.x - dx / r.width * (W / d.view.zoom), y: d.view.y - dy / r.height * (H / d.view.zoom) });
   }
   function up(e: PointerEvent<SVGSVGElement>) {
+    if(contourDrag.current?.pointerId===e.pointerId){contourDrag.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);return;}
     if(coastStroke.current?.pointerId===e.pointerId){
       coastStroke.current=null;
       if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);
@@ -900,16 +930,14 @@ export default function App() {
     if (tool === 'drawland' || tool === 'drawocean' || tool === 'pond') return;
     if (tool === 'land') { if (Math.abs(p.y) > 900) return alert('Choose a location between 90°N and 90°S.'); setPoint(p); return; }
     if (tool === 'river') { if (!land) return alert('Select a land first.'); setDrawing(v => [...v, p]); return; }
-    if (tool === 'depth') {
-      setPoint(p); setSelectedLandId(hit?.id || null); return;
-    }
+    if (tool === 'depth') return;
     if (tool === 'biome') { setPoint(p); return; }
     if(tool === 'district'){setPoint(p);return;}
     if(tool === 'feature'){setPoint(p);return;}
     if (!land) return alert('Select a land for this feature.');
     setPoint(p);
   }
-  function changeTool(next: Tool) { setSelectedFeatureId(null); setSelectedWaterId(null); setTool(next); setPoint(null); setDrawing([]); setCoastEraser(false); coastStroke.current=null; setName(''); setDescription(''); }
+  function changeTool(next: Tool) { setTerrainEditingId(null); setSelectedFeatureId(null); setSelectedWaterId(null); setTool(next); setPoint(null); setDrawing([]); setCoastEraser(false); coastStroke.current=null; setName(''); setDescription(''); }
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!name.trim() && tool !== 'biome' && tool !== 'depth') return;
@@ -925,7 +953,7 @@ export default function App() {
     } else if (tool === 'depth') {
       // Terrain is allowed on land and underwater; oceanic relief is bathymetry.
       // The coastline remains unchanged by seafloor changes.
-      const patch:DepthPatch={id:id(),x:point.x,y:point.y,radius:depthRadius,depthMeters,name:name.trim()||`${data.lands.some(l=>insideLand(point,l))?(depthMeters>=0?'Elevation':'Depression'):(depthMeters>=0?'Seamount':'Ocean trench')} ${Math.abs(depthMeters)}m`};
+      const patch:DepthPatch={id:id(),x:point.x,y:point.y,radius:depthRadius,depthMeters,name:name.trim()||'Terrain region'};
       setData(d=>{
         const patches=[...(d.depthPatches||[]),patch];
         // Do not create permanent alpine biome objects: snow and cold-climate
@@ -937,6 +965,25 @@ export default function App() {
       setData(d => ({ ...d, labels: [...d.labels, { id: id(), landId: land.id, x: point.x, y: point.y, name: name.trim() }] }));
     }
     changeTool('explore'); setMagical(false); setBiomeName(''); setDistrictImage('');
+  }
+  function saveDrawnTerrain(){
+    if(drawing.length<3)return;
+    const outline=simplifiedOutline(drawing,140);
+    const cx=outline.reduce((n,p)=>n+p.x,0)/outline.length;
+    const cy=outline.reduce((n,p)=>n+p.y,0)/outline.length;
+    const radius=Math.max(4,...outline.map(p=>Math.hypot(p.x-cx,p.y-cy)));
+    const patch:DepthPatch={id:id(),x:cx,y:cy,radius,depthMeters,name:name.trim()||
+      (data.lands.some(l=>insideLand({x:cx,y:cy},l))?'Terrain region':'Seafloor region'),
+      outline,contours:contourBands(outline,contourDensity),density:contourDensity};
+    setData(d=>({...d,depthPatches:[...(d.depthPatches||[]),patch]}));
+    setDrawing([]);setName('');setTerrainEditingId(patch.id);setContourSelection(0);
+  }
+  function regenerateContours(patchId:string,density:number){
+    setContourDensity(density);
+    setData(d=>({...d,depthPatches:(d.depthPatches||[]).map(p=>p.id===patchId?{
+      ...p,density,contours:contourBands(terrainOutline(p),density)
+    }:p)}));
+    setContourSelection(i=>Math.min(i,density-1));
   }
   function finishCustomLand() {
     if (drawing.length<3 || !name.trim()) return;
@@ -1185,10 +1232,10 @@ export default function App() {
         <button onClick={() => setView({ x: 0, y: 0, zoom: 1 })}>Reset View</button>
       </nav>
       <p className="atlas-shortcuts">Shortcuts: Ctrl+Z undo · Ctrl+Shift+Z redo · WASD pan when hovering the map · Delete selected map object (with confirmation)</p>
-      <div className="atlas-release-marker" aria-label="Atlas build version" data-atlas-version="31">ATLAS v31 · LAND CONTOURS · OCEAN BATHYMETRY</div>
+      <div className="atlas-release-marker" aria-label="Atlas build version" data-atlas-version="31">ATLAS v32 · DRAWABLE TOPOGRAPHY · EDITABLE CONTOURS</div>
       <p className="atlas-instruction">{tool === 'explore' ? 'Click a land or district to explore · Drag to pan · Scroll to zoom' : tool === 'land' ? 'Click to place an automatically generated land; overlapping lands connect.' : tool === 'drawland' ? 'Hold and drag to draw the coastline with a mouse, finger, touchpad or pen. Switch to Eraser to remove draft strokes; finish below.' : tool === 'drawocean' ? 'Draw an enclosed area to cut sea or an inlet into lands you own or can edit. Only intersecting land is removed; a fully submerged land record is deleted.' : tool === 'pond' ? 'Select a land first, then draw a freehand pond inside it. Pond water overlays biomes, darkens in depressions, and cannot occupy elevated terrain.' : tool === 'river' ? 'Click successive points to draw a river.' : 'Click on the map to position this feature, including offshore regions.'}</p>
       <section className="map-frame"><div className="atlas-map-shell"><div className="map-surface atlas-viewport">
-        <svg ref={svg} onMouseEnter={() => { mapHovered.current = true; }} onMouseLeave={() => { mapHovered.current = false; }} className={`atlas-map${['drawland','drawocean','pond'].includes(tool)?' atlas-map-drawing':''}`} viewBox={`${left} ${top} ${width} ${height}`} preserveAspectRatio="none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; coastStroke.current=null; }}>
+        <svg ref={svg} onMouseEnter={() => { mapHovered.current = true; }} onMouseLeave={() => { mapHovered.current = false; }} className={`atlas-map${['drawland','drawocean','pond','depth'].includes(tool)?' atlas-map-drawing':''}`} viewBox={`${left} ${top} ${width} ${height}`} preserveAspectRatio="none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; coastStroke.current=null; contourDrag.current=null; }}>
           <defs>
             <filter id="joined-coast" x="-15%" y="-15%" width="130%" height="130%" colorInterpolationFilters="sRGB">
               <feMorphology in="SourceAlpha" operator="dilate" radius="3" result="expanded"/>
@@ -1249,26 +1296,33 @@ export default function App() {
               fill={p.depthMeters>=0 ? '#8bbed0' : '#173d6a'}
               opacity={Math.min(.75,.22+Math.abs(p.depthMeters)/12000)} />)}
           </g>
-          {/* Topographic contours overlay terrain and biome colors while respecting
-              the land/sea boundary. Each nested ring denotes a relative height band.
-              These are illustrative contours, not surveyed elevations. */}
-          {showTopography && <g pointerEvents="none" className="atlas-topography" fill="none">
+          {/* Authored contours. Drawn regions can be reshaped with control nodes.
+              Land and ocean retain independent clipping/masking. */}
+          {showTopography && <g className="atlas-topography" fill="none">
             {(data.depthPatches||[]).map(p=>{
-              const rings=Math.max(2,Math.min(7,Math.ceil(Math.abs(p.depthMeters)/500)));
-              const ringPaths=Array.from({length:rings},(_,i)=>{
-                const fraction=(i+1)/(rings+1);
-                return closedPath(terrainOutline({...p,radius:p.radius*(.16+.78*fraction)}));
-              });
+              const lines=p.contours?.length?p.contours:contourBands(terrainOutline(p),Math.max(2,Math.min(12,Math.ceil(Math.abs(p.depthMeters)/500))));
               return <g key={`topography-${p.id}`}>
                 {data.lands.map(l=><g key={`land-${l.id}`} clipPath={`url(#clip-${l.id})`}
-                  stroke={p.depthMeters>=0?'#574c35':'#55483e'} strokeWidth={1.08/Math.sqrt(view.zoom)} opacity="0.55">
-                  {ringPaths.map((d,i)=><path key={i} d={d} strokeDasharray={p.depthMeters<0?`${3/view.zoom} ${2/view.zoom}`:undefined}/>)}
+                  stroke={p.depthMeters>=0?'#574c35':'#55483e'} strokeWidth={1.08/Math.sqrt(view.zoom)} opacity="0.65" pointerEvents="none">
+                  {lines.map((line,i)=><path key={i} d={closedPath(line)} strokeDasharray={p.depthMeters<0?`${3/view.zoom} ${2/view.zoom}`:undefined}/>) }
                 </g>)}
-                <g mask="url(#ocean-only)" stroke="#d2e8e5" strokeWidth={1.05/Math.sqrt(view.zoom)} opacity="0.72">
-                  {ringPaths.map((d,i)=><path key={i} d={d} strokeDasharray={p.depthMeters<0?`${5/view.zoom} ${3/view.zoom}`:undefined}/>)}
+                <g mask="url(#ocean-only)" stroke="#d2e8e5" strokeWidth={1.05/Math.sqrt(view.zoom)} opacity="0.78" pointerEvents="none">
+                  {lines.map((line,i)=><path key={i} d={closedPath(line)} strokeDasharray={p.depthMeters<0?`${5/view.zoom} ${3/view.zoom}`:undefined}/>) }
                 </g>
+                {tool==='depth'&&terrainEditingId===p.id&&<g>
+                  <path d={closedPath(terrainOutline(p))} fill="none" stroke="#d4b774" strokeDasharray="5 4" strokeWidth={2/Math.sqrt(view.zoom)} pointerEvents="none"/>
+                  {lines.map((line,ring)=><g key={ring}>
+                    <path d={closedPath(line)} fill="none" stroke={ring===contourSelection?'#eab85f':'#9c8a66'} strokeWidth={(ring===contourSelection?2.5:1)/Math.sqrt(view.zoom)} pointerEvents="none"/>
+                    {ring===contourSelection&&line.map((node,j)=><circle key={j} cx={node.x} cy={node.y} r={5/Math.sqrt(view.zoom)} fill="#f6e0a4" stroke="#5b4831" strokeWidth={1.2/Math.sqrt(view.zoom)} style={{cursor:'grab',touchAction:'none'}}
+                      onPointerDown={e=>{if(!atlasSync.canEdit('depthPatches',p.id))return;e.preventDefault();e.stopPropagation();contourDrag.current={pointerId:e.pointerId,ring,node:j};svg.current?.setPointerCapture(e.pointerId)}}/>) }
+                  </g>)}
+                </g>}
               </g>;
             })}
+          </g>}
+          {tool==='depth'&&!terrainEditingId&&drawing.length>=2&&<g pointerEvents="none">
+            <path d={drawing.length>=3?closedPath(drawing):openPath(drawing)} fill="#b69b5070" stroke="#5d4931" strokeWidth={2/view.zoom} strokeDasharray="5 4"/>
+            {drawing.length>=3&&contourBands(drawing,contourDensity).map((line,i)=><path key={i} d={closedPath(line)} fill="none" stroke="#ead4a1" strokeWidth={1/view.zoom}/>)}
           </g>}
           {data.waters.map(w => w.kind === 'pond' ? <g key={w.id} mask={`url(#pondmask-${w.id})`} pointerEvents="none">
             <path d={waterPaths.get(w.id)||''} fill={depthColor(w.depthMeters??150)} stroke="#6b989b" strokeWidth="2" strokeLinejoin="round" />
@@ -1441,10 +1495,36 @@ export default function App() {
             {atlasSync.canDelete('lands',land.id)&&<button type="button" className="delete-land-button" onClick={deleteLand}>Delete This Land and Its Contents</button>}
           </>}
         </>}
+        {tool==='depth'&&<section className="terrain-vector-editor" style={{display:'grid',gap:10}}>
+          <h2>Draw Topography · Land & Ocean</h2>
+          {!terrainEditingId ? <>
+            <p>Draw the region boundary with a mouse, trackpad, finger or pen. Adjust the contour density while drawing, then save the region. This replaces random circular placement.</p>
+            <div className="coast-brush-tools"><button type="button" className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button type="button" className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button></div>
+            <label>Terrain name<input value={name} onChange={e=>setName(e.target.value)} placeholder="Mountains, basin, undersea ridge…"/></label>
+            <label>Signed height / depth change: {depthMeters} m<input type="range" min="-11000" max="8800" step="100" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>
+            <label>Contour density: {contourDensity} lines<input type="range" min="2" max="16" value={contourDensity} onChange={e=>setContourDensity(Number(e.target.value))}/></label>
+            <small>{drawing.length} boundary points · Contours preview live</small>
+            <button type="button" disabled={drawing.length<3} onClick={saveDrawnTerrain}>Save Terrain & Edit Contours</button>
+            <button type="button" onClick={()=>setDrawing([])}>Clear Draft</button>
+          </> : (()=>{
+            const patch=(data.depthPatches||[]).find(p=>p.id===terrainEditingId);
+            if(!patch)return <button type="button" onClick={()=>setTerrainEditingId(null)}>New Terrain Region</button>;
+            const lines=patch.contours||contourBands(terrainOutline(patch),patch.density||6);
+            return <>
+              <strong>Editing: {patch.name}</strong>
+              <p>Choose a contour, then drag its golden nodes on the map. Changes save live to the shared atlas. Only users with edit permission should modify this region.</p>
+              <label>Contour line<select value={Math.min(contourSelection,lines.length-1)} onChange={e=>setContourSelection(Number(e.target.value))}>{lines.map((_,i)=><option key={i} value={i}>Contour {i+1}</option>)}</select></label>
+              <label>Contour density: {patch.density||lines.length} lines<input type="range" min="2" max="16" value={patch.density||lines.length} disabled={!atlasSync.canEdit('depthPatches',patch.id)} onChange={e=>{regenerateContours(patch.id,Number(e.target.value));}}/></label>
+              <button type="button" onClick={()=>{setTerrainEditingId(null);setDrawing([])}}>Finish Editing / Draw New Region</button>
+            </>;
+          })()}
+          <h3>Saved terrain regions</h3>
+          {(data.depthPatches||[]).map(p=><div key={p.id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}><span>{p.name}</span>{atlasSync.canEdit('depthPatches',p.id)&&<button type="button" onClick={()=>{setTerrainEditingId(p.id);setContourSelection(0);setDrawing([])}}>Edit Contours</button>}</div>)}
+        </section>}
         {tool === 'drawocean' && <><h2>Draw Ocean / Cut Coastline</h2><p>Trace a closed region. Where your region overlaps a land you own or are allowed to edit, the land becomes ocean. The rest of the land and its records remain intact.</p><div className="coast-brush-tools"><button className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button><small>{drawing.length} points</small></div><button type="button" disabled={drawing.length<3} onClick={finishOcean}>Apply Ocean Cutout</button><button onClick={()=>setDrawing([])}>Clear Draft</button></>}
         {tool === 'drawland' && <><h2>Draw Your Own Land</h2><p>Hold and drag to trace a coastline. Release to finish a stroke; it closes automatically when you save. The eraser removes parts of the unsaved outline.</p><div className="coast-brush-tools"><button type="button" className={!coastEraser?'tool-active':''} onClick={()=>setCoastEraser(false)}>Brush</button><button type="button" className={coastEraser?'tool-active':''} onClick={()=>setCoastEraser(true)}>Eraser</button><small>{drawing.length} points · Pencil/tablet/mouse/touch</small></div><label>Land name<input value={name} onChange={e=>setName(e.target.value)} placeholder="New continent"/></label><label>Description<textarea value={description} onChange={e=>setDescription(e.target.value)}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical environment</label>{magical && <><label>Climate override<select value={ALL_BIOMES.includes(biomeType)?biomeType:ALL_BIOMES[0]} onChange={e=>setBiomeType(e.target.value)}>{ALL_BIOMES.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)}/></label></>}<button disabled={drawing.length<3||!name.trim()} onClick={finishCustomLand}>Finish Land</button><button onClick={()=>setDrawing(v=>v.slice(0,-1))} disabled={!drawing.length}>Undo Last Point</button><button onClick={()=>setDrawing([])}>Clear Coastline</button></>}
         {tool === 'land' && <><h2>Found a New Land</h2><label>Land size<select value={size} onChange={e=>setSize(e.target.value as Size)}>{Object.keys(SIZES).map(s=><option key={s}>{s}</option>)}</select></label>{!point ? <p>Click on the map to position your land.</p> : <form onSubmit={submit}><p>Latitude: {latitudeLabel(point.y)}</p><label>Land name<input value={name} onChange={e=>setName(e.target.value)} required/></label><label>Description<textarea value={description} onChange={e=>setDescription(e.target.value)}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical environment</label>{magical && <><label>Environment<select value={selectedBiome} onChange={e=>setBiomeType(e.target.value)}>{ALL_BIOMES.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom environment name (optional)<input value={biomeName} onChange={e=>setBiomeName(e.target.value)} placeholder="e.g. The Eternal Bloom"/></label></>}<p>Natural suggestion: {naturalBiomes(point.y)[0]}</p><button type="submit">Establish Land</button></form>}</>}
-        {['district','biome','label','depth'].includes(tool) && <><h2>{tool === 'district' ? 'Create a District' : tool === 'biome' ? 'Paint a Biome Region' : tool==='depth'?'Land & Ocean Topography':'Place a Map Label'}</h2><p>Region: {tool === 'depth' ? (point ? (data.lands.some(l=>insideLand(point,l)) ? 'Land terrain' : 'Ocean floor') : 'Click land or ocean') : (land?.name||'Open ocean / independent habitat')}</p>{tool === 'depth' && <><label>Height change in meters (+ raises land or seafloor; − lowers land or deepens ocean)<input type="number" min="-11000" max="8800" step="100" value={depthMeters} onChange={e=>setDepthMeters(clamp(Number(e.target.value),-11000,8800))}/></label><label>Terrain region radius<input type="range" min="10" max="160" value={depthRadius} onChange={e=>setDepthRadius(Number(e.target.value))}/></label><p>Terrain patches work on land and the ocean floor. Positive underwater patches create seamounts and ridges; negative ones make deeper basins or trenches. Contour lines visualize relative terrain bands. Underwater patches do not create land, and ocean cutting still controls coastlines.</p></>}{tool === 'district' && <><label>District radius<input type="range" min="10" max="70" value={districtRadius} onChange={e=>setDistrictRadius(Number(e.target.value))}/></label><label>District description<textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder="Describe this district's landscape, culture or habitats..."/></label><label>District illustration (optional)<input type="file" accept="image/*" onChange={e=>void pickImage(e,setDistrictImage)}/></label>{districtImage&&<div className="book-upload-preview"><img src={districtImage} alt="District illustration preview"/><button type="button" onClick={()=>setDistrictImage('')}>Remove image</button></div>}</>}{tool === 'biome' && <>{(realm==='aquatic'||siteAquatic)&&<label>Water depth (meters, aquatic habitat)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>}<label>Biome patch size<input type="range" min="10" max="110" value={biomeRadius} onChange={e=>setBiomeRadius(Number(e.target.value))}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical climate override</label><label>Ecological realm<select value={realm} onChange={e=>{setRealm(e.target.value as 'terrestrial'|'aquatic');setBiomeType('');}}><option value="terrestrial">Terrestrial / land</option><option value="aquatic">Aquatic / marine / freshwater</option></select></label><p>Natural choices account for latitude, rainfall and combined terrain elevation on land, or salinity/depth in water. Longitude: {point?longitudeAt(point.x).toFixed(1):land?longitudeAt(land.x).toFixed(1):'0'}°. Longitude locates a region but does not determine climate by itself.</p><p><strong>Placement:</strong> {point?biomeScope:'Click anywhere on land, a lake/river, or the ocean.'} · Natural land: {naturalLandHere} · Natural water: {naturalWaterHere}. Crossing a shoreline automatically uses the appropriate natural biome on each side. Magical patches keep their chosen identity throughout.</p><label>Biome type<select value={selectedBiome} onChange={e=>setBiomeType(e.target.value)}>{biomesToChoose.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom biome name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)} placeholder="Optional local name"/></label></>}{!point ? <p>Click the map to position this region. Terrain patches and biomes can be placed on land or underwater.</p> : <form onSubmit={submit}>{tool !== 'biome' && tool!=='depth' && <label>Name<input value={name} onChange={e=>setName(e.target.value)} required/></label>}<button type="submit">{tool === 'district' ? 'Create District' : tool === 'biome' ? 'Add Biome' : tool==='depth'?'Apply Terrain Change':'Place Label'}</button></form>}</>}
+        {['district','biome','label'].includes(tool) && <><h2>{tool === 'district' ? 'Create a District' : tool === 'biome' ? 'Paint a Biome Region' : tool==='depth'?'Land & Ocean Topography':'Place a Map Label'}</h2><p>Region: {tool === 'depth' ? (point ? (data.lands.some(l=>insideLand(point,l)) ? 'Land terrain' : 'Ocean floor') : 'Click land or ocean') : (land?.name||'Open ocean / independent habitat')}</p>{tool === 'depth' && <><label>Height change in meters (+ raises land or seafloor; − lowers land or deepens ocean)<input type="number" min="-11000" max="8800" step="100" value={depthMeters} onChange={e=>setDepthMeters(clamp(Number(e.target.value),-11000,8800))}/></label><label>Terrain region radius<input type="range" min="10" max="160" value={depthRadius} onChange={e=>setDepthRadius(Number(e.target.value))}/></label><p>Terrain patches work on land and the ocean floor. Positive underwater patches create seamounts and ridges; negative ones make deeper basins or trenches. Contour lines visualize relative terrain bands. Underwater patches do not create land, and ocean cutting still controls coastlines.</p></>}{tool === 'district' && <><label>District radius<input type="range" min="10" max="70" value={districtRadius} onChange={e=>setDistrictRadius(Number(e.target.value))}/></label><label>District description<textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder="Describe this district's landscape, culture or habitats..."/></label><label>District illustration (optional)<input type="file" accept="image/*" onChange={e=>void pickImage(e,setDistrictImage)}/></label>{districtImage&&<div className="book-upload-preview"><img src={districtImage} alt="District illustration preview"/><button type="button" onClick={()=>setDistrictImage('')}>Remove image</button></div>}</>}{tool === 'biome' && <>{(realm==='aquatic'||siteAquatic)&&<label>Water depth (meters, aquatic habitat)<input type="number" min="0" max="11000" value={depthMeters} onChange={e=>setDepthMeters(Number(e.target.value))}/></label>}<label>Biome patch size<input type="range" min="10" max="110" value={biomeRadius} onChange={e=>setBiomeRadius(Number(e.target.value))}/></label><label className="atlas-check"><input type="checkbox" checked={magical} onChange={e=>setMagical(e.target.checked)}/>Magical climate override</label><label>Ecological realm<select value={realm} onChange={e=>{setRealm(e.target.value as 'terrestrial'|'aquatic');setBiomeType('');}}><option value="terrestrial">Terrestrial / land</option><option value="aquatic">Aquatic / marine / freshwater</option></select></label><p>Natural choices account for latitude, rainfall and combined terrain elevation on land, or salinity/depth in water. Longitude: {point?longitudeAt(point.x).toFixed(1):land?longitudeAt(land.x).toFixed(1):'0'}°. Longitude locates a region but does not determine climate by itself.</p><p><strong>Placement:</strong> {point?biomeScope:'Click anywhere on land, a lake/river, or the ocean.'} · Natural land: {naturalLandHere} · Natural water: {naturalWaterHere}. Crossing a shoreline automatically uses the appropriate natural biome on each side. Magical patches keep their chosen identity throughout.</p><label>Biome type<select value={selectedBiome} onChange={e=>setBiomeType(e.target.value)}>{biomesToChoose.map(b=><option key={b}>{b}</option>)}</select></label><label>Custom biome name<input value={biomeName} onChange={e=>setBiomeName(e.target.value)} placeholder="Optional local name"/></label></>}{!point ? <p>Click the map to position this region. Terrain patches and biomes can be placed on land or underwater.</p> : <form onSubmit={submit}>{tool !== 'biome' && tool!=='depth' && <label>Name<input value={name} onChange={e=>setName(e.target.value)} required/></label>}<button type="submit">{tool === 'district' ? 'Create District' : tool === 'biome' ? 'Add Biome' : tool==='depth'?'Apply Terrain Change':'Place Label'}</button></form>}</>}
         {tool === 'explore' && selectedFeature && <section className="selected-landscape-record" aria-label="Selected landscape">
           <h2>Selected Landscape · {selectedFeature.kind}</h2><CreatorCredit kind="features" id={selectedFeature.id} revision={atlasSync.remoteRevision}/>
           <p>{selectedFeature.landId ? `Land: ${data.lands.find(l=>l.id===selectedFeature.landId)?.name || 'Open ocean'}` : 'Open ocean'} · {selectedFeature.depthMeters != null ? `Depth: ${selectedFeature.depthMeters} m` : 'Surface landscape'}</p>
